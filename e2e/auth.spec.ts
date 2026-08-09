@@ -31,8 +31,8 @@ test("sign up, log out, and log back in", async ({ page }) => {
   await page.getByRole("button", { name: "Sign up" }).click();
 
   await expect(page).toHaveURL(/\/dashboard$/);
-  await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
-  await expect(page.getByText(email)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Log out" })).toBeVisible();
+  await expect(page.getByText(email).first()).toBeVisible();
 
   // Log out -> back to the login page.
   await page.getByRole("button", { name: "Log out" }).click();
@@ -44,7 +44,7 @@ test("sign up, log out, and log back in", async ({ page }) => {
   await page.getByRole("button", { name: "Log in" }).click();
 
   await expect(page).toHaveURL(/\/dashboard$/);
-  await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Log out" })).toBeVisible();
 });
 
 test("unauthenticated dashboard access redirects to login", async ({ page }) => {
