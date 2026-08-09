@@ -121,3 +121,13 @@ Build in order. Do not start a later phase until the phase before it works end-t
   - 5.3 End-to-end verification suite (one Playwright file per PRD §8 user story).
 
 Build principle: run every external API on a free tier or trial first — GLEIF (free), Sandbox (self-serve pay-per-call), Eko (sandbox credentials), Deepvue (free trial). If a capability has no free path when its chunk starts, ship that chunk against a mock adapter. Do not wait on a sales contract.
+
+<!-- BEGIN:nextjs-agent-rules -->
+
+# This is NOT the Next.js you know
+
+This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
+
+This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
+
+<!-- END:nextjs-agent-rules -->
