@@ -182,6 +182,22 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
 - **Secrets.** `.env.local` now also holds `SANDBOX_API_KEY` and `SANDBOX_API_SECRET` (server-only,
   gitignored). These still need adding to Vercel before the 1.4 poller runs in production.
 
+**Chunk 1.3 — MSME/Udyam provider adapter (Deepvue) + mock: DONE (mock only; live adapter stubbed).**
+- `lib/providers/msme/` mirrors `lib/providers/gst/`: a common `MsmeProviderAdapter` interface
+  (`types.ts`), a `deepvueAdapter.ts`, a deterministic `mockAdapter.ts`, and `index.ts`
+  (`getMsmeAdapter()` selector). `MsmeCheckResult` adds a `registrationDate` field (the one shape
+  difference from GST). Statuses normalize to `REGISTERED | LAPSED | NOT_MSME | UNKNOWN`. Server-only.
+- **`deepvueAdapter.ts` is a deliberate stub.** No Deepvue credentials exist yet (signup needs a work
+  email) and its docs are login-gated, so — per the 1.2 lesson that a live contract can differ from
+  published docs — the field names and response shape are NOT guessed. The interface compiles but
+  `checkUdyam()` throws a clear "not configured" error; a `TODO(chunk-1.3-live)` marks exactly what to
+  verify against the live API before wiring it. It fails loudly, never silently.
+- **Provider selection:** `MSME_PROVIDER=mock|deepvue`. Unset → mock (Deepvue is a stub). When Deepvue
+  is implemented, add a keys-present check to the default like the GST selector.
+- The mock reuses `UDYAM_REGEX` from `lib/import/validateVendorRow.ts`, so a malformed Udyam number
+  returns `invalid_udyam` before any call. No DB writes, no API route, no new dependency; 1.4 wires it
+  to `verification_checks`.
+
 **Testing.**
 - Playwright e2e lives in `e2e/`. Run `npm run test:e2e`.
 - `e2e/auth.spec.ts` covers sign-up, log out, log in, the protected-route redirect, and the wrong-password inline error.
@@ -193,6 +209,9 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
   active→ACTIVE, cancelled→CANCELLED, a mock timeout, a malformed GSTIN spends no provider call, a
   provider 400, retry-once, 401 token refresh, and token caching. The Sandbox adapter test injects a
   fake `fetch`, so no network is touched.
+- `lib/providers/msme/*.test.ts` (Vitest) cover Chunk 1.3: the mock returns REGISTERED with a
+  registration date, plus lapsed / not_msme / timeout, and rejects a malformed Udyam number before any
+  call; the Deepvue stub rejects with a clear "not configured" error even for a valid number.
 - The e2e tests need `.env.local` and a reachable Supabase project. `playwright.config.ts` loads
   `.env.local` into the test process. The Vitest unit tests need neither.
 
@@ -205,11 +224,13 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
 
 ### Next chunk
 
-Chunk 1.3 — MSME/Udyam provider adapter (Deepvue) + mock, following the exact same pattern as 1.2
-(`lib/providers/msme/`: `types.ts`, `deepvueAdapter.ts`, `mockAdapter.ts`, `index.ts`). Ship against
-the mock until Deepvue free-trial credentials exist. Unit tests only (no UI): valid / lapsed /
-malformed Udyam number and a provider timeout must pass against both adapters and return the same
-shape; a malformed Udyam number is rejected before any API call.
+Chunk 1.4 — Cron polling + change detection. Create the `verification_checks` table (ERD §3.2) and
+`POST /api/cron/poll-gst` + `POST /api/cron/poll-msme` (service-role auth only). Each cron run batches
+every vendor with a `gstin` (or `udyam_number`) per org, calls the relevant adapter
+(`getGstAdapter()` / `getMsmeAdapter()`), writes one `verification_checks` row, and sets `is_change`
+against that vendor's prior check of the same type — mapping the adapter's uppercase status to the
+`vendors.current_gst_status` / `current_msme_status` enums. One adapter failure must not abort the
+batch (the other vendors still get rows; the failed one lands at `status_value = unknown`).
 
 <!-- BEGIN:nextjs-agent-rules -->
 
