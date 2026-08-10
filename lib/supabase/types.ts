@@ -21,6 +21,7 @@ export type BankNameMatchResult = "exact" | "partial" | "none";
 // 'unverified' (that value only exists as the vendor's un-checked default).
 export type BankVerificationStatus = "verified" | "manual_review" | "mismatch";
 export type BankProvider = "eko" | "mock";
+export type CertificateStatus = "valid" | "expired";
 export type VendorSource = "tally" | "excel" | "erp_sync";
 export type ImportSource = "tally_export" | "excel" | "erp_sync";
 export type ImportStatus =
@@ -289,6 +290,52 @@ export type Database = {
           },
         ];
       };
+      certificates: {
+        Row: {
+          id: string;
+          organization_id: string;
+          vendor_id: string;
+          certificate_type: string;
+          file_path: string;
+          expiry_date: string;
+          status: CertificateStatus;
+          uploaded_at: string;
+        };
+        Insert: {
+          id?: string;
+          organization_id: string;
+          vendor_id: string;
+          certificate_type: string;
+          file_path: string;
+          expiry_date: string;
+          status: CertificateStatus;
+          uploaded_at?: string;
+        };
+        Update: {
+          id?: string;
+          organization_id?: string;
+          vendor_id?: string;
+          certificate_type?: string;
+          file_path?: string;
+          expiry_date?: string;
+          status?: CertificateStatus;
+          uploaded_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "certificates_organization_id_fkey";
+            columns: ["organization_id"];
+            referencedRelation: "organizations";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "certificates_vendor_id_fkey";
+            columns: ["vendor_id"];
+            referencedRelation: "vendors";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
     };
     Views: Record<never, never>;
     Functions: {
@@ -314,6 +361,16 @@ export type Database = {
           p_status: BankVerificationStatus;
           p_provider: BankProvider;
           p_re_verified_reason?: string | null;
+        };
+        Returns: string;
+      };
+      create_certificate: {
+        Args: {
+          p_vendor_id: string;
+          p_certificate_type: string;
+          p_file_path: string;
+          p_expiry_date: string;
+          p_status: CertificateStatus;
         };
         Returns: string;
       };

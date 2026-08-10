@@ -59,6 +59,12 @@ export default async function VendorDetailPage(
             <span className="ml-2 text-xs text-zinc-500">Bank</span>
             <StatusBadge badge={vendor.bank} />
           </div>
+          <Link
+            href={`/vendors/${id}/certificates`}
+            className="w-fit text-sm text-zinc-600 underline-offset-4 hover:underline dark:text-zinc-400"
+          >
+            Certificates →
+          </Link>
         </section>
 
         <section className="flex flex-col gap-2">

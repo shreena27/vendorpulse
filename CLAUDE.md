@@ -288,6 +288,44 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
 - **No new secret needed.** Eko has no sandbox credentials yet, so there's nothing to add to
   `.env.local`/Vercel; `BANK_PROVIDER` is unset (mock is the default, same as `MSME_PROVIDER`).
 
+**Chunk 2.2 — Certificate upload: DONE.**
+- `supabase/migrations/0005_certificates.sql` creates `certificates` (ERD §3.2, same RLS + grants
+  pattern as every prior table) and the `create_certificate()` SECURITY DEFINER RPC (validates the
+  vendor belongs to the caller's org first, mirrors `record_bank_verification`). `certificate_type`
+  is plain `text` — the ERD defines no closed enum, so none was invented (same "no speculative ERD
+  surface" call as dropping `masters_india` in 0003). Status (`valid`/`expired`) is computed once,
+  server-side, at upload time only — there is no ongoing/scheduled certificate recheck in v1 (PRD).
+- **The private Storage bucket has its own, separate RLS layer.** The migration also creates the
+  `certificates` Storage bucket (`public = false`, `allowed_mime_types` restricted to
+  PDF/JPEG/PNG as defense-in-depth) and three `storage.objects` policies (INSERT/SELECT/DELETE)
+  scoped by `(storage.foldername(name))[1] = current_org_id()::text` — objects live at
+  `{organization_id}/{vendor_id}/{timestamp}_{filename}`, so the first path segment IS the
+  enforcement boundary. This is independent of the Postgres RLS on the `certificates` table itself;
+  the integration test (below) proves a different org's client is blocked by Storage even when given
+  a path pointing at another org's folder, not just by the app's own vendor-ownership check.
+- **Both the upload and the signed-URL call must run on the caller's authenticated client**, never
+  the admin/service-role client — using admin would silently bypass the storage RLS above.
+  `lib/storage/certificateUrl.ts`'s `getCertificateSignedUrl()` generates a 60-second signed URL;
+  nothing is ever exposed via a public URL.
+- `lib/certificates/validateCertificateFile.ts` checks both the declared extension and MIME type
+  (and requires them to agree on the same file kind) before any Storage write — a `.exe`, a spoofed
+  extension, or a spoofed `Content-Type` are all rejected before touching Storage.
+  `lib/certificates/certificateStatus.ts` holds the pure valid/expired derivation.
+- `lib/storage/uploadCertificate.ts` is the one orchestrator: validate → upload → derive status →
+  `create_certificate()` RPC → **on RPC failure, delete the just-uploaded object** before re-throwing,
+  so a same-request DB failure never leaves an orphan either (the acceptance criteria only required
+  this for the rejected-file-type case, which is trivially satisfied since validation runs first;
+  this extends the same guarantee to the DB-failure path).
+- `app/api/vendors/[id]/certificates/route.ts` exports `POST` (upload, any org user) and `GET` (list
+  with fresh signed URLs — added beyond the ERD's literal contract since the new page needs a way to
+  read back what's uploaded). `lib/certificates/queries.ts` holds `listVendorCertificates` +
+  `listVendorCertificatesWithUrls`, shared by the route and the page so they never drift (same
+  pattern as `lib/vendors/queries.ts`).
+- `app/vendors/[id]/certificates/page.tsx` (server shell) + `CertificateUploadForm.tsx` (client,
+  mirrors the `vendors/import` page's `FormData` submit pattern) is a new, self-contained page — the
+  existing vendor detail page and `lib/vendors/queries.ts` were not touched beyond one "Certificates →"
+  nav link.
+
 **Testing.**
 - Playwright e2e lives in `e2e/`. Run `npm run test:e2e`.
 - `e2e/auth.spec.ts` covers sign-up, log out, log in, the protected-route redirect, and the wrong-password inline error.
@@ -339,6 +377,23 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
 - `e2e/bank-verification.spec.ts` imports two vendors via CSV (bank columns mapped to the mock's
   exact- and partial-match fixtures) and asserts the list shows "Verified" for one and "Manual
   review" — never "Verified" — for the other.
+- `lib/certificates/certificateStatus.test.ts` and `validateCertificateFile.test.ts` (Vitest) cover
+  Chunk 2.2's pure logic: boundary dates (today counts as still valid), and PDF/JPEG/PNG accepted
+  vs. `.exe`/spoofed-extension/spoofed-MIME all rejected.
+- `lib/storage/uploadCertificate.test.ts` (Vitest, hermetic, stub Storage + stub RPC) asserts the
+  upload path shape, the derived status reaching the RPC, and — critically — that a failed RPC call
+  triggers `storage.remove()` on the exact path just uploaded.
+- `lib/storage/uploadCertificate.integration.test.ts` is a **live-DB + Storage** integration test
+  (needs migration 0005 applied): uploads a real file and asserts the row + object both exist and a
+  signed URL is fetchable; asserts an RPC failure (bogus vendor id) leaves the Storage folder empty;
+  and — the requirement this test exists to prove — asserts a **second org's** signed-in client
+  cannot read the first org's signed URL, and cannot write into the first org's folder even when
+  the app-supplied `organizationId` is deliberately wrong, because the `storage.objects` RLS policy
+  itself blocks it independent of anything the app checked.
+- `e2e/certificate-upload.spec.ts` covers the three acceptance cases end-to-end: a future-dated
+  upload shows "Valid," a past-dated upload shows "Expired" immediately, and a `.exe` upload is
+  rejected with an inline error while the admin client's `storage.list()` on that vendor's folder
+  confirms nothing was left behind.
 
 ### Operational notes
 
@@ -353,15 +408,21 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
 
 ### Next chunk
 
-Phase 1 is complete (import → GST/MSME adapters → daily polling + change detection → status
-dashboard). Chunk 2.1 (bank verification, mock only) is done. Next:
+Phase 1 and Phase 2 (onboarding-only verification: bank + certificates) are both complete. Next is
+Phase 3 — alerting (may run in parallel with any remaining Phase 2 polish):
 
-- **Chunk 2.2 — Certificate upload** (`certificates`; Supabase Storage). Once it lands, revisit
-  `POST /api/vendors/:id/flag` (`app/api/vendors/[id]/flag/route.ts`) — it currently handles bank
-  re-verification only; certificate re-verification will need its own request shape there.
-- **Eko live adapter.** `lib/providers/bank/ekoAdapter.ts` is a deliberate stub (`TODO(chunk-2.1-live)`
-  marks exactly what to verify) — implement it once Eko sandbox credentials exist, following the same
-  "verify against the live API first, don't guess field names" lesson as the Sandbox/Deepvue adapters.
+- **Chunk 3.1 — Impact scorer** (adds `payments`: open POs / pending payments, needed for the
+  45-day MSME window and the ₹50cr LEI threshold).
+- **Chunk 3.2 — Alert generation + dedupe** (`alerts`). An alert fires only when a change hits a
+  vendor with a pending payment, or a LEI check resolves badly for a payment in flight (ERD "Key
+  business rules"). Dedupes per `vendor_id` + `trigger_type`.
+- **Chunk 3.3 — Alert UI + one-tap actions + Resend email.**
+- **Revisit `POST /api/vendors/:id/flag`** (`app/api/vendors/[id]/flag/route.ts`) once certificate
+  re-verification is needed — it currently handles bank re-verification only.
+- **Live adapters still stubbed, lowest priority:** `lib/providers/bank/ekoAdapter.ts`
+  (`TODO(chunk-2.1-live)`) and `lib/providers/msme/deepvueAdapter.ts` — implement once sandbox
+  credentials exist, verifying the live API first rather than guessing field names (the Chunk 1.2
+  lesson). Neither blocks Phase 3.
 
 <!-- BEGIN:nextjs-agent-rules -->
 
