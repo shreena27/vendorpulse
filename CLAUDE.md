@@ -138,10 +138,31 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
 - `lib/supabase/types.ts` holds a hand-written `Database` type. Regenerate it with the Supabase CLI later.
 - `app/dashboard/page.tsx` shows the caller's organization name and members (RLS-scoped).
 
+**Chunk 1.1 — vendor bulk import: DONE.**
+- `supabase/migrations/0002_vendors.sql` creates `vendors` and `vendor_imports`.
+- `POST /api/vendors/import` (`app/api/vendors/import/route.ts`) reads a CSV/XLSX upload plus a
+  column mapping, validates each row, dedupes by GSTIN within the upload, and calls the
+  `import_vendors()` RPC.
+- All writes go through `public.import_vendors(text, int, int, jsonb)`, a `SECURITY DEFINER` RPC
+  (like `handle_new_user`) that inserts the batch row and every vendor row in one transaction and
+  stamps `organization_id = current_org_id()`. `authenticated` has SELECT only on the two tables;
+  there is no INSERT policy. Validation and dedupe finish in memory first, so the import's final
+  `status`/`row_count`/`error_count` are known before any write (`processing` is never persisted).
+- `lib/import/parseVendorFile.ts` parses CSV/XLSX with SheetJS (lazy `import("xlsx")`; pinned to the
+  patched CDN tarball in `package.json`, not the npm-registry build). It forces every cell to a
+  string (`raw: false`) so GSTIN/PAN/Udyam keep leading zeros. `lib/import/validateVendorRow.ts`
+  holds the GSTIN/Udyam regexes and the per-row rules (bad GSTIN or missing name → hard reject; bad
+  Udyam → soft warning, vendor saved with MSME status `unknown`).
+- `app/vendors/import/page.tsx` is the upload + column-mapping UI. `app/vendors/page.tsx` is a
+  minimal RLS-scoped list (the full status dashboard is Chunk 1.5).
+
 **Testing.**
 - Playwright e2e lives in `e2e/`. Run `npm run test:e2e`.
 - `e2e/auth.spec.ts` covers sign-up, log out, log in, the protected-route redirect, and the wrong-password inline error.
 - `e2e/rls.spec.ts` covers auto-provisioning and cross-tenant isolation (API level and UI level).
+- `e2e/vendor-import.spec.ts` covers Chunk 1.1: a good file imports and lists every vendor; a
+  duplicate GSTIN is skipped and reported by row number (not merged or double-counted); an empty
+  file shows a clear error, not a blank success.
 - The tests need `.env.local` and a reachable Supabase project. `playwright.config.ts` loads `.env.local` into the test process.
 
 ### Operational notes
@@ -153,7 +174,10 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
 
 ### Next chunk
 
-Chunk 1.1 — vendor bulk import: `vendors` and `vendor_imports` tables, `POST /api/vendors/import`, CSV/XLSX parse with column mapping, per-row validation, dedupe by GSTIN.
+Chunk 1.2 — GST provider adapter (Sandbox by Quicko) + mock, behind the common `ProviderAdapter`
+interface. Ship against the mock when no live credential exists. Unit tests only (no UI yet): the
+same case matrix (active / cancelled / invalid GSTIN / provider timeout) must pass against both the
+live and mock adapters and return the same shape.
 
 <!-- BEGIN:nextjs-agent-rules -->
 
