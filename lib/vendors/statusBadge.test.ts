@@ -66,6 +66,17 @@ describe("deriveStatusBadge — bank always reads its stored status", () => {
     });
     expect(b).toEqual({ label: "Unverified", tone: "gray" });
   });
+
+  it("maps manual_review to an attention-worthy amber badge, never Verified (Chunk 2.1)", () => {
+    const b = deriveStatusBadge({
+      kind: "bank",
+      hasIdentifier: true,
+      hasCheck: false,
+      currentStatus: "manual_review",
+    });
+    expect(b).toEqual({ label: "Manual review", tone: "amber" });
+    expect(b.label).not.toBe("Verified");
+  });
 });
 
 describe("isAttentionTone", () => {

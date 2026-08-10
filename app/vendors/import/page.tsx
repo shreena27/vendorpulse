@@ -17,6 +17,12 @@ type ImportResult = {
   errorCount: number;
   errors: RowIssue[];
   warnings: RowIssue[];
+  bankVerifications?: {
+    verified: number;
+    manualReview: number;
+    mismatch: number;
+    skipped: number;
+  };
 };
 
 const FIELD_LABELS: Record<SchemaField, string> = {
@@ -24,6 +30,8 @@ const FIELD_LABELS: Record<SchemaField, string> = {
   gstin: "GSTIN",
   udyam_number: "Udyam number",
   pan: "PAN",
+  bank_account_number: "Bank account number",
+  bank_ifsc: "IFSC",
 };
 
 const REQUIRED_FIELDS: SchemaField[] = ["name"];
@@ -34,6 +42,8 @@ const GUESS_PATTERNS: Record<SchemaField, RegExp> = {
   gstin: /gst/i,
   udyam_number: /udyam|msme/i,
   pan: /pan/i,
+  bank_account_number: /account|bank/i,
+  bank_ifsc: /ifsc/i,
 };
 
 function guessMapping(headers: string[]): ColumnMapping {
@@ -286,6 +296,17 @@ export default function ImportVendorsPage() {
             ) : (
               <p className="text-sm text-zinc-600 dark:text-zinc-400">
                 Every row imported cleanly.
+              </p>
+            )}
+
+            {result.bankVerifications && (
+              <p className="text-sm text-zinc-600 dark:text-zinc-400">
+                Bank check: {result.bankVerifications.verified} verified,{" "}
+                {result.bankVerifications.manualReview} need manual review,{" "}
+                {result.bankVerifications.mismatch} mismatched
+                {result.bankVerifications.skipped > 0 &&
+                  `, ${result.bankVerifications.skipped} skipped`}
+                .
               </p>
             )}
 

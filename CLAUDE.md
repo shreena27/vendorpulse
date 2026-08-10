@@ -246,6 +246,48 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
   a view if that becomes a requirement.
 - Reads only — no new tables. Bank status stays `Unverified` for everyone until Chunk 2.1.
 
+**Chunk 2.1 — Bank account verification (Eko) + mock: DONE (mock only; live adapter stubbed).**
+- `supabase/migrations/0004_bank_verifications.sql` creates `bank_verifications` (ERD §3.2, same
+  RLS + grants pattern as every prior table: `authenticated` SELECT-only, all writes through a
+  SECURITY DEFINER RPC) and widens `vendors.current_bank_status`'s CHECK constraint to add
+  `manual_review` (looked up via `pg_constraint` rather than a guessed constraint name, since 0002
+  already shipped). The new `record_bank_verification()` RPC inserts one row and updates the
+  vendor's `current_bank_status` in one transaction, validating the vendor belongs to the caller's
+  org first (mirrors `import_vendors`).
+- `lib/providers/bank/` mirrors `lib/providers/msme/`: a common `BankProviderAdapter` interface
+  (`types.ts`), a `mockAdapter.ts`, an `ekoAdapter.ts` **stub** (no Eko sandbox credentials exist
+  yet; `verifyAccount()` throws a clear "not configured" error — same lesson as the Deepvue stub in
+  Chunk 1.3, do not guess field names), and `index.ts` (`getBankAdapter()`, `BANK_PROVIDER=mock|eko`,
+  unset → mock). `nameMatch.ts` holds the pure name-matching classifier (`exact`/`partial`/`none`)
+  and `mask.ts` the pure `"****" + last4` masker, both unit-tested standalone. **Safety guarantee is
+  type-level:** `BankCheckResult` has no field for the raw account number at all — only
+  `accountNumberMasked` — so nothing downstream can carry the full number even by accident.
+- **The raw account number's only entry point is the CSV import.** `lib/import/validateVendorRow.ts`
+  gained two optional columns, `bank_account_number` and `bank_ifsc` (validated like Udyam: malformed
+  → soft warning, vendor still imported, bank check skipped for that row). The raw values live only
+  in the import route's in-memory row list — never added to `VendorImportInput`, so they never reach
+  the `vendors` table. `import_vendors` (0002) is untouched; after it returns `import_id`, the route
+  re-selects the inserted vendors and calls the new pure `lib/vendors/correlateImport.ts` to pair each
+  bank-detail row back to its vendor id (by GSTIN when present, else exact name — a same-name,
+  GSTIN-less collision within one import is a documented edge case, same spirit as 0002's existing
+  no-unique-GSTIN note).
+- `lib/bank/verifyVendorBank.ts` is the one orchestrator both call sites use: the import route (looped,
+  bounded concurrency, same worker-pool shape as `pollRunner.ts`) and the new
+  `POST /api/vendors/:id/flag` (`app/api/vendors/[id]/flag/route.ts`, any org user, body
+  `{ accountNumber, ifsc, reason? }` — bank only for now, no `target` field since certificates (2.2)
+  don't exist yet). It calls the adapter, then `record_bank_verification`, and never handles the raw
+  number itself.
+- Status model: `name_match_result` (`exact|partial|none`) drives `status`
+  (`verified|manual_review|mismatch`) on both `bank_verifications.status` and
+  `vendors.current_bank_status`; an adapter failure also maps to `manual_review` — a failed check is
+  never treated as compliant (ERD §7, same rule as GST/MSME). `lib/vendors/statusBadge.ts` gained a
+  `manual_review` → amber "Manual review" entry.
+- `app/vendors/import/page.tsx`'s column-mapping UI needed no new logic — it already maps over
+  `SCHEMA_FIELDS` generically — just two new `FIELD_LABELS`/`GUESS_PATTERNS` entries, plus a
+  `bankVerifications` summary line in the result panel.
+- **No new secret needed.** Eko has no sandbox credentials yet, so there's nothing to add to
+  `.env.local`/Vercel; `BANK_PROVIDER` is unset (mock is the default, same as `MSME_PROVIDER`).
+
 **Testing.**
 - Playwright e2e lives in `e2e/`. Run `npm run test:e2e`.
 - `e2e/auth.spec.ts` covers sign-up, log out, log in, the protected-route redirect, and the wrong-password inline error.
@@ -278,6 +320,25 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
   share a uniform key set.
 - The e2e tests need `.env.local` and a reachable Supabase project. `playwright.config.ts` loads
   `.env.local` into the test process. The default Vitest unit tests need neither.
+- `lib/providers/bank/*.test.ts` (Vitest) cover Chunk 2.1: `nameMatch`/`mask` as standalone pure
+  functions; the mock's four fixtures (exact/partial/mismatch/timeout, all name-agnostic — derived
+  from whatever vendor name they're given, not hardcoded) plus malformed-input-spends-no-call; the
+  Eko stub rejects with a clear "not configured" error even for valid input; the selector's
+  `BANK_PROVIDER` default/override/memoization.
+- `lib/import/validateVendorRow.test.ts` and `lib/vendors/correlateImport.test.ts` (Vitest) cover the
+  new bank columns' soft-warning validation and the GSTIN/name correlation (including the documented
+  same-name-collision edge case).
+- `lib/bank/verifyVendorBank.test.ts` (Vitest, hermetic, stub adapter + stub Supabase client) asserts
+  the RPC is called with only masked/derived fields — never the raw account number.
+- `lib/bank/verifyVendorBank.integration.test.ts` is a **live-DB** integration test (needs migration
+  0004 applied): seeds a vendor, runs a real check with a literal raw test account number, then
+  asserts exactly one `bank_verifications` row exists, its `account_number_masked` is the expected
+  `****last4`, and — the literal acceptance check — `JSON.stringify()` of the full row does not
+  contain the raw test account number anywhere. Also asserts the exact/partial fixtures map to
+  `verified`/`manual_review` on `vendors.current_bank_status`.
+- `e2e/bank-verification.spec.ts` imports two vendors via CSV (bank columns mapped to the mock's
+  exact- and partial-match fixtures) and asserts the list shows "Verified" for one and "Manual
+  review" — never "Verified" — for the other.
 
 ### Operational notes
 
@@ -293,15 +354,14 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
 ### Next chunk
 
 Phase 1 is complete (import → GST/MSME adapters → daily polling + change detection → status
-dashboard). Phase 2 is onboarding-only verification:
+dashboard). Chunk 2.1 (bank verification, mock only) is done. Next:
 
-- **Chunk 2.1 — Bank account verification (Eko).** `CREATE TABLE bank_verifications` (ERD §3.2); a
-  one-time, per-vendor check triggered right after import (or on a manual re-flag via
-  `POST /api/vendors/:id/flag`). Calls Eko's sandbox/live API, stores a **masked** result
-  (last 4 digits only — never persist the full account number), and sets `current_bank_status`
-  (`verified` on an exact name match, `mismatch`/`manual_review` on a partial match). Ship against a
-  mock adapter until Eko sandbox credentials exist (same pattern as the GST/MSME adapters).
-- **Chunk 2.2 — Certificate upload** (`certificates`; Supabase Storage) runs after 2.1.
+- **Chunk 2.2 — Certificate upload** (`certificates`; Supabase Storage). Once it lands, revisit
+  `POST /api/vendors/:id/flag` (`app/api/vendors/[id]/flag/route.ts`) — it currently handles bank
+  re-verification only; certificate re-verification will need its own request shape there.
+- **Eko live adapter.** `lib/providers/bank/ekoAdapter.ts` is a deliberate stub (`TODO(chunk-2.1-live)`
+  marks exactly what to verify) — implement it once Eko sandbox credentials exist, following the same
+  "verify against the live API first, don't guess field names" lesson as the Sandbox/Deepvue adapters.
 
 <!-- BEGIN:nextjs-agent-rules -->
 

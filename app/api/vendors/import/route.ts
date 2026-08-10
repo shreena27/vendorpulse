@@ -8,6 +8,80 @@ import {
   type RowIssue,
 } from "@/lib/import/validateVendorRow";
 import type { VendorImportInput } from "@/lib/supabase/types";
+import { correlateImportedVendors } from "@/lib/vendors/correlateImport";
+import { getBankAdapter } from "@/lib/providers/bank";
+import { verifyVendorBank } from "@/lib/bank/verifyVendorBank";
+
+// Bounded concurrency for the post-import bank-verification loop, same shape
+// as the poller's worker pool (lib/verification/pollRunner.ts) — kept inline
+// since it's ~15 lines with only two call sites (here and the flag route).
+const BANK_CHECK_CONCURRENCY = 8;
+
+interface BankRow {
+  name: string;
+  gstin: string | null;
+  accountNumber: string;
+  ifsc: string;
+}
+
+interface BankVerificationSummary {
+  verified: number;
+  manualReview: number;
+  mismatch: number;
+  skipped: number;
+}
+
+async function runBankVerifications(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  importId: string,
+  bankRows: BankRow[],
+): Promise<BankVerificationSummary> {
+  const summary: BankVerificationSummary = {
+    verified: 0,
+    manualReview: 0,
+    mismatch: 0,
+    skipped: 0,
+  };
+
+  const { data: insertedVendors } = await supabase
+    .from("vendors")
+    .select("id, name, gstin")
+    .eq("import_id", importId);
+
+  const correlated = correlateImportedVendors(bankRows, insertedVendors ?? []);
+  const matched = correlated.filter(
+    (r): r is typeof r & { vendorId: string } => r.vendorId !== null,
+  );
+  summary.skipped += correlated.length - matched.length;
+
+  const adapter = getBankAdapter();
+  let cursor = 0;
+  async function worker() {
+    for (let i = cursor++; i < matched.length; i = cursor++) {
+      const row = matched[i];
+      try {
+        const result = await verifyVendorBank(supabase, adapter, {
+          vendorId: row.vendorId,
+          vendorName: row.name,
+          accountNumber: row.accountNumber,
+          ifsc: row.ifsc,
+        });
+        if (result.status === "verified") summary.verified++;
+        else if (result.status === "manual_review") summary.manualReview++;
+        else summary.mismatch++;
+      } catch {
+        // One vendor's bank check failing never aborts the batch or the
+        // import response — same resilience rule as the GST/MSME poller.
+        summary.skipped++;
+      }
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(BANK_CHECK_CONCURRENCY, matched.length) }, worker),
+  );
+
+  return summary;
+}
 
 // Runs on the default Node.js runtime (SheetJS needs Node APIs). Do NOT set
 // `runtime = 'edge'`. Route Handlers have no Next body-size cap; the practical
@@ -96,6 +170,7 @@ export async function POST(request: Request) {
   // Validate and dedupe entirely in memory, before any DB write. The status
   // enum has no 'failed' state, so nothing partial is ever persisted.
   const validVendors: VendorImportInput[] = [];
+  const bankRows: BankRow[] = [];
   const errors: RowIssue[] = [];
   const warnings: RowIssue[] = [];
   const seenGstins = new Set<string>();
@@ -127,6 +202,14 @@ export async function POST(request: Request) {
 
     warnings.push(...result.warnings);
     validVendors.push(result.vendor);
+    if (result.bankDetails) {
+      bankRows.push({
+        name: result.vendor.name,
+        gstin: result.vendor.gstin,
+        accountNumber: result.bankDetails.accountNumber,
+        ifsc: result.bankDetails.ifsc,
+      });
+    }
   });
 
   // One atomic call: inserts the vendor_imports batch row and every vendor row
@@ -148,6 +231,14 @@ export async function POST(request: Request) {
     );
   }
 
+  // Chunk 2.1: run the one-time bank check for every row that carried valid
+  // bank details. Vendors are already imported at this point, so a bank-side
+  // problem is reported in the summary, never as an import failure.
+  const bankVerifications =
+    bankRows.length > 0
+      ? await runBankVerifications(supabase, importId, bankRows)
+      : undefined;
+
   return NextResponse.json({
     importId,
     total: parsed.rows.length,
@@ -155,5 +246,6 @@ export async function POST(request: Request) {
     errorCount: errors.length,
     errors,
     warnings,
+    ...(bankVerifications ? { bankVerifications } : {}),
   });
 }

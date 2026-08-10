@@ -15,7 +15,12 @@ export type GstStatus =
   | "not_applicable"
   | "unknown";
 export type MsmeStatus = "registered" | "lapsed" | "not_msme" | "unknown";
-export type BankStatus = "verified" | "mismatch" | "unverified";
+export type BankStatus = "verified" | "manual_review" | "mismatch" | "unverified";
+export type BankNameMatchResult = "exact" | "partial" | "none";
+// Distinct from BankStatus: bank_verifications.status never persists
+// 'unverified' (that value only exists as the vendor's un-checked default).
+export type BankVerificationStatus = "verified" | "manual_review" | "mismatch";
+export type BankProvider = "eko" | "mock";
 export type VendorSource = "tally" | "excel" | "erp_sync";
 export type ImportSource = "tally_export" | "excel" | "erp_sync";
 export type ImportStatus =
@@ -232,6 +237,58 @@ export type Database = {
           },
         ];
       };
+      bank_verifications: {
+        Row: {
+          id: string;
+          organization_id: string;
+          vendor_id: string;
+          account_number_masked: string;
+          ifsc: string;
+          name_match_result: BankNameMatchResult;
+          status: BankVerificationStatus;
+          provider: BankProvider;
+          re_verified_reason: string | null;
+          checked_at: string;
+        };
+        Insert: {
+          id?: string;
+          organization_id: string;
+          vendor_id: string;
+          account_number_masked: string;
+          ifsc: string;
+          name_match_result: BankNameMatchResult;
+          status: BankVerificationStatus;
+          provider: BankProvider;
+          re_verified_reason?: string | null;
+          checked_at?: string;
+        };
+        Update: {
+          id?: string;
+          organization_id?: string;
+          vendor_id?: string;
+          account_number_masked?: string;
+          ifsc?: string;
+          name_match_result?: BankNameMatchResult;
+          status?: BankVerificationStatus;
+          provider?: BankProvider;
+          re_verified_reason?: string | null;
+          checked_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "bank_verifications_organization_id_fkey";
+            columns: ["organization_id"];
+            referencedRelation: "organizations";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "bank_verifications_vendor_id_fkey";
+            columns: ["vendor_id"];
+            referencedRelation: "vendors";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
     };
     Views: Record<never, never>;
     Functions: {
@@ -245,6 +302,18 @@ export type Database = {
           p_row_count: number;
           p_error_count: number;
           p_vendors: VendorImportInput[];
+        };
+        Returns: string;
+      };
+      record_bank_verification: {
+        Args: {
+          p_vendor_id: string;
+          p_account_number_masked: string;
+          p_ifsc: string;
+          p_name_match_result: BankNameMatchResult;
+          p_status: BankVerificationStatus;
+          p_provider: BankProvider;
+          p_re_verified_reason?: string | null;
         };
         Returns: string;
       };

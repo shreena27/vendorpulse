@@ -10,7 +10,14 @@
 import type { VendorImportInput } from "@/lib/supabase/types";
 
 /** Schema fields a source column can map to. `name` is required. */
-export const SCHEMA_FIELDS = ["name", "gstin", "udyam_number", "pan"] as const;
+export const SCHEMA_FIELDS = [
+  "name",
+  "gstin",
+  "udyam_number",
+  "pan",
+  "bank_account_number",
+  "bank_ifsc",
+] as const;
 export type SchemaField = (typeof SCHEMA_FIELDS)[number];
 
 /** Maps each schema field to the source column header it should read from. */
@@ -23,7 +30,12 @@ export type MappedRow = Partial<Record<SchemaField, string>>;
 export type RowIssue = { row: number; field: string; message: string };
 
 export type RowResult =
-  | { ok: true; vendor: VendorImportInput; warnings: RowIssue[] }
+  | {
+      ok: true;
+      vendor: VendorImportInput;
+      warnings: RowIssue[];
+      bankDetails: BankDetails | null;
+    }
   | { ok: false; errors: RowIssue[] };
 
 // 15-char GSTIN: 2 state digits, 5 PAN letters, 4 digits, 1 letter, 1 entity
@@ -31,6 +43,14 @@ export type RowResult =
 export const GSTIN_REGEX = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
 // Udyam registration number, e.g. UDYAM-MH-01-0000001.
 export const UDYAM_REGEX = /^UDYAM-[A-Z]{2}-[0-9]{2}-[0-9]{7}$/;
+// Indian bank account number: 9-18 digits (no fixed standard length).
+export const ACCOUNT_NUMBER_REGEX = /^[0-9]{9,18}$/;
+// IFSC: 4 bank-code letters, literal '0', 6 branch-code alphanumerics.
+export const IFSC_REGEX = /^[A-Z]{4}0[A-Z0-9]{6}$/;
+
+/** Raw bank details for a row, used once (Chunk 2.1) then discarded — never
+ * part of VendorImportInput, so they never reach the vendors table. */
+export type BankDetails = { accountNumber: string; ifsc: string };
 
 /** Read a mapped field, trimmed; returns "" when unmapped or blank. */
 function value(row: MappedRow, field: SchemaField): string {
@@ -70,6 +90,8 @@ export function validateVendorRow(row: MappedRow, rowNumber: number): RowResult 
   const gstin = value(row, "gstin");
   const udyam = value(row, "udyam_number");
   const pan = value(row, "pan");
+  const bankAccountNumber = value(row, "bank_account_number");
+  const bankIfsc = value(row, "bank_ifsc");
 
   if (!name) {
     errors.push({ row: rowNumber, field: "name", message: "Name is required." });
@@ -122,5 +144,35 @@ export function validateVendorRow(row: MappedRow, rowNumber: number): RowResult 
     source: "excel",
   };
 
-  return { ok: true, vendor, warnings };
+  // Soft: bad or incomplete bank details never reject the row. The vendor is
+  // saved without a bank check (stays 'unverified') until corrected or
+  // supplied via a manual flag. Raw values live only in this function's
+  // return value — they never enter `vendor` / VendorImportInput.
+  let bankDetails: BankDetails | null = null;
+  if (bankAccountNumber && bankIfsc) {
+    if (!ACCOUNT_NUMBER_REGEX.test(bankAccountNumber)) {
+      warnings.push({
+        row: rowNumber,
+        field: "bank_account_number",
+        message: `Invalid bank account number: "${bankAccountNumber}". Vendor saved; bank verification skipped.`,
+      });
+    } else if (!IFSC_REGEX.test(bankIfsc.toUpperCase())) {
+      warnings.push({
+        row: rowNumber,
+        field: "bank_ifsc",
+        message: `Invalid IFSC: "${bankIfsc}". Vendor saved; bank verification skipped.`,
+      });
+    } else {
+      bankDetails = { accountNumber: bankAccountNumber, ifsc: bankIfsc.toUpperCase() };
+    }
+  } else if (bankAccountNumber || bankIfsc) {
+    warnings.push({
+      row: rowNumber,
+      field: bankAccountNumber ? "bank_ifsc" : "bank_account_number",
+      message:
+        "Bank account number and IFSC must both be provided to verify. Vendor saved; bank verification skipped.",
+    });
+  }
+
+  return { ok: true, vendor, warnings, bankDetails };
 }

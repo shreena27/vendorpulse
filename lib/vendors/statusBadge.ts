@@ -34,6 +34,7 @@ const MSME_MAP: Record<string, Badge> = {
 
 const BANK_MAP: Record<string, Badge> = {
   verified: { label: "Verified", tone: "green" },
+  manual_review: { label: "Manual review", tone: "amber" },
   mismatch: { label: "Mismatch", tone: "red" },
   unverified: { label: "Unverified", tone: "gray" },
 };
