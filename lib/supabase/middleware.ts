@@ -46,8 +46,13 @@ export async function updateSession(request: NextRequest) {
   const isPublic = PUBLIC_PATHS.some(
     (p) => path === p || path.startsWith(`${p}/`),
   );
+  // API routes enforce their own auth and must return JSON status codes, never
+  // an HTML redirect to /login. The session cookie was still refreshed above;
+  // we only skip the redirect. (e.g. /api/vendors/import returns 401; the cron
+  // routes return 401 unless the Bearer CRON_SECRET matches.)
+  const isApi = path.startsWith("/api/");
 
-  if (!user && !isPublic) {
+  if (!user && !isPublic && !isApi) {
     // No session and the path is protected. Send the user to login.
     const url = request.nextUrl.clone();
     url.pathname = "/login";
