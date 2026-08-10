@@ -15,6 +15,13 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["lib/**/*.test.ts"],
-    exclude: ["e2e/**", "node_modules/**", ".next/**"],
+    // Integration tests (real Supabase) run under a separate config via
+    // `npm run test:integration`, so the default run stays hermetic.
+    exclude: [
+      "e2e/**",
+      "node_modules/**",
+      ".next/**",
+      "lib/**/*.integration.test.ts",
+    ],
   },
 });

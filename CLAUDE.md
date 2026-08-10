@@ -8,7 +8,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `npm run build` — production build.
 - `npm start` — serve the production build (run `build` first).
 - `npm run lint` — run ESLint (flat config, `eslint.config.mjs`).
-- `npm test` — run Vitest unit tests once (`test:watch` for watch mode).
+- `npm test` — run the hermetic Vitest unit tests once (`test:watch` for watch mode).
+- `npm run test:integration` — run the live-DB Vitest integration tests (needs `.env.local` + applied migrations).
 - `npm run test:e2e` — run the Playwright end-to-end tests.
 
 Two test runners, kept apart: **Vitest** for server-side unit tests (`lib/**/*.test.ts`, config in
@@ -198,6 +199,31 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
   returns `invalid_udyam` before any call. No DB writes, no API route, no new dependency; 1.4 wires it
   to `verification_checks`.
 
+**Chunk 1.4 — Cron polling + change detection: DONE.**
+- `supabase/migrations/0003_verification_checks.sql` creates `verification_checks` (ERD §3.2). It
+  carries a denormalized `organization_id` (set from the vendor) so RLS reuses the org-scoped pattern:
+  **SELECT-only for `authenticated`**, no insert/update/delete policy — the table is append-only and
+  only the service-role cron writes it. `provider` CHECK is `sandbox_quicko|deepvue|mock` (the ERD's
+  `masters_india` is omitted — see [[no-speculative-erd-surface]]).
+- `lib/supabase/admin.ts` is the first **service-role** client (`createAdminClient()`), used only by
+  the cron. It bypasses RLS to work across all orgs — server-only, never import it client-side.
+- `app/api/cron/poll-gst/route.ts` and `poll-msme/route.ts` export **both GET and POST** (Vercel Cron
+  triggers via GET; POST is for manual runs). Each verifies `Authorization: Bearer $CRON_SECRET` via
+  `lib/verification/cronAuth.ts` (**fails closed** when the secret is unset), then runs the poll.
+  `vercel.json` schedules them daily (02:00 / 02:30 UTC).
+- `lib/verification/pollRunner.ts` (`runPoll`, dependency-injected) loads every vendor with the
+  relevant identifier across all orgs, checks each via the adapter with a small **concurrency pool**,
+  writes one `verification_checks` row per vendor, and updates the vendor's `current_*_status`
+  (grouped UPDATEs). A thrown adapter call becomes a `status_value = 'UNKNOWN'` row so **one failure
+  never aborts the batch** (ERD §7). `lib/verification/changeDetector.ts` holds the pure logic:
+  `detectChange` (first check = baseline, not a change), the status→vendor-enum mappers, and
+  `buildCheck`.
+- **Provider selection at deploy:** the GST cron uses `getGstAdapter()` → live Sandbox by default
+  (`GST_PROVIDER` unset); the MSME cron uses the mock (Deepvue still stubbed). No alerts and no
+  `evidence_log` yet (Chunks 3 / 4.1) — 1.4 only records checks and flips `is_change`.
+- **Secrets / Vercel:** `.env.local` now also holds `CRON_SECRET`. Before the cron runs in production,
+  add `CRON_SECRET` and `SANDBOX_API_KEY`/`SANDBOX_API_SECRET` to Vercel; leave `GST_PROVIDER` unset.
+
 **Testing.**
 - Playwright e2e lives in `e2e/`. Run `npm run test:e2e`.
 - `e2e/auth.spec.ts` covers sign-up, log out, log in, the protected-route redirect, and the wrong-password inline error.
@@ -212,25 +238,35 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
 - `lib/providers/msme/*.test.ts` (Vitest) cover Chunk 1.3: the mock returns REGISTERED with a
   registration date, plus lapsed / not_msme / timeout, and rejects a malformed Udyam number before any
   call; the Deepvue stub rejects with a clear "not configured" error even for a valid number.
+- `lib/verification/*.test.ts` (Vitest, hermetic) cover Chunk 1.4's pure logic: `detectChange`, the
+  status→vendor-enum mappers, `buildCheck`, and `isAuthorizedCron` (including fail-closed when
+  `CRON_SECRET` is unset).
+- `lib/verification/pollRunner.integration.test.ts` is a **live-DB** integration test, run separately
+  via `npm run test:integration` (its own `vitest.integration.config.mts`, kept out of the default
+  `npm test`). It seeds vendors, runs `runPoll` twice with a stub adapter, and asserts `is_change`
+  fires on exactly the changed vendor and that one thrown check leaves the rest of the batch intact.
+  Because the poller is global (all orgs), its assertions are scoped to the vendor ids it seeds, not
+  global counts. Needs migration 0003 applied + `.env.local`; self-skips when the Supabase env is absent.
 - The e2e tests need `.env.local` and a reachable Supabase project. `playwright.config.ts` loads
-  `.env.local` into the test process. The Vitest unit tests need neither.
+  `.env.local` into the test process. The default Vitest unit tests need neither.
 
 ### Operational notes
 
 - **Migrations run by hand.** Apply each `supabase/migrations/*.sql` in the Supabase SQL Editor (or `supabase db push`). The Vercel deploy does NOT run migrations. There is no CI migration step yet.
 - **Every new table needs GRANTs.** PostgREST checks SQL grants BEFORE RLS. A table with policies but no grant returns `permission denied` (42501). Grant `select`/`insert`/`update`/`delete` to `authenticated` as the policy needs, and `all` to `service_role`. See section 6 of `0001_core.sql`.
-- **Secrets.** `.env.local` holds `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY`. It is gitignored. Never use the service-role key in client code.
+- **Secrets.** `.env.local` (gitignored) holds `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `SANDBOX_API_KEY`/`SANDBOX_API_SECRET` (GST provider), and `CRON_SECRET` (cron auth). Never use the service-role key in client code. The service-role/Sandbox/cron secrets are all server-only (no `NEXT_PUBLIC_` prefix). Mirror `SANDBOX_*` and `CRON_SECRET` into Vercel before the cron runs in production.
 - **Deprecation.** Next.js 16.3 prints a warning that `middleware.ts` is deprecated in favor of `proxy.ts`. The file still works. A migration codemod exists.
 
 ### Next chunk
 
-Chunk 1.4 — Cron polling + change detection. Create the `verification_checks` table (ERD §3.2) and
-`POST /api/cron/poll-gst` + `POST /api/cron/poll-msme` (service-role auth only). Each cron run batches
-every vendor with a `gstin` (or `udyam_number`) per org, calls the relevant adapter
-(`getGstAdapter()` / `getMsmeAdapter()`), writes one `verification_checks` row, and sets `is_change`
-against that vendor's prior check of the same type — mapping the adapter's uppercase status to the
-`vendors.current_gst_status` / `current_msme_status` enums. One adapter failure must not abort the
-batch (the other vendors still get rows; the failed one lands at `status_value = unknown`).
+Chunk 1.5 — Vendor status dashboard UI. Build `GET /api/vendors` (list with current status,
+filterable/sortable) and `GET /api/vendors/:id` (detail: current status + `verification_checks`
+history + certificates + open alerts). The list view shows each vendor's current GST/MSME status at a
+glance; the detail view shows the full check history in order. A vendor with a GST status change is
+visibly distinguishable from one with none; a vendor with zero checks yet (poller hasn't run) shows a
+`pending` state, not a blank or error. PAN/proprietor contact are DPDP-restricted — visible only to
+`finance_head`/`admin`, excluded from the general list (ERD §6.3). This is the first read UI over the
+rows 1.1–1.4 produce; tested with Playwright.
 
 <!-- BEGIN:nextjs-agent-rules -->
 

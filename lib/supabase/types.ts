@@ -35,6 +35,13 @@ export type VendorImportInput = {
   source: VendorSource;
 };
 
+export type CheckType = "gst" | "msme_udyam";
+// Providers actually built or planned in the Implementation Plan: Sandbox by
+// Quicko (GST, live), Deepvue (MSME, stubbed for now), and the mock. The ERD
+// §3.2 also names masters_india as an alternative GST provider, but nothing
+// builds it — add it back (here and in the CHECK constraint) only if it lands.
+export type CheckProvider = "sandbox_quicko" | "deepvue" | "mock";
+
 export type Database = {
   public: {
     Tables: {
@@ -172,6 +179,55 @@ export type Database = {
             foreignKeyName: "vendors_import_id_fkey";
             columns: ["import_id"];
             referencedRelation: "vendor_imports";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      verification_checks: {
+        Row: {
+          id: string;
+          organization_id: string;
+          vendor_id: string;
+          check_type: CheckType;
+          status_value: string;
+          provider: CheckProvider;
+          raw_response: unknown | null;
+          is_change: boolean;
+          checked_at: string;
+        };
+        Insert: {
+          id?: string;
+          organization_id: string;
+          vendor_id: string;
+          check_type: CheckType;
+          status_value: string;
+          provider: CheckProvider;
+          raw_response?: unknown | null;
+          is_change?: boolean;
+          checked_at?: string;
+        };
+        Update: {
+          id?: string;
+          organization_id?: string;
+          vendor_id?: string;
+          check_type?: CheckType;
+          status_value?: string;
+          provider?: CheckProvider;
+          raw_response?: unknown | null;
+          is_change?: boolean;
+          checked_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "verification_checks_organization_id_fkey";
+            columns: ["organization_id"];
+            referencedRelation: "organizations";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "verification_checks_vendor_id_fkey";
+            columns: ["vendor_id"];
+            referencedRelation: "vendors";
             referencedColumns: ["id"];
           },
         ];
