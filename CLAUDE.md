@@ -354,6 +354,47 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
   once after seeding a `pending` payment (alert-worthy), and re-queries `verification_checks`
   directly both times to confirm the row is identical either way.
 
+**Chunk 3.2 — Alert generation + dedupe: DONE.**
+- `supabase/migrations/0007_alerts.sql` creates `alerts` (ERD §3.2/§5.3, same RLS + grants pattern
+  as every prior table — `authenticated` select-own only, service role writes, no RPC needed since
+  every write comes from the cron pipeline which already runs as the service role, same reasoning
+  `verification_checks` itself relies on). `trigger_type` + `source_check_id` is a polymorphic
+  reference — same pattern CLAUDE.md already documents for `evidence_log` ("points to source rows
+  by entity_type + entity_id... no foreign key, so a write never fails"): `trigger_type`
+  (`gst_change | msme_change | lei_check`) says which table, `source_check_id` is an un-FK'd uuid,
+  since a GST/MSME alert points into `verification_checks` but a future LEI alert (Chunk 4.3) will
+  point into `lei_checks` instead. `status`'s full lifecycle (`open|hold|reviewed|cleared|escalated`)
+  is defined now even though only `open` is ever written here — the ERD's own `POST /api/alerts/:id
+  /action` contract already names the other states.
+- **`lib/verification/pollRunner.ts` now returns `changedChecks`** (id/vendorId/organizationId/
+  checkType for every `is_change = true` row), via `.insert(checks).select(...)` instead of a bare
+  `.insert(checks)` — the one change to already-shipped Chunk 1.4 code, needed so
+  `alerts.source_check_id` has a real row id to point at. Purely additive: existing callers/tests
+  that ignore the return value are unaffected (`pollRunner.integration.test.ts` still passes
+  unchanged).
+- `lib/alerts/createOrUpdateAlert.ts` is ERD §5.3's dedupe: an existing alert for the same
+  `(vendor_id, trigger_type)` with `status in (open, hold, reviewed)` gets only its
+  `payment_impact_amount` updated (never `source_check_id` — that stays pointed at whichever check
+  *first* opened the alert); otherwise a new row is inserted with `status = 'open'`.
+- `lib/alerts/processChangeAlerts.ts` is the loop: for each changed check, `scoreChangeForVendor` →
+  skip if not alert-worthy → `getOpenPaymentAmount` (new export on `impactScorer.ts`, sums all
+  `pending` payments for the vendor) → `createOrUpdateAlert`. Same two-tier DI pattern as Chunk 3.1
+  (`processChangeAlerts(changedChecks, deps)` is hermetically tested with injected fakes;
+  `processChangeAlertsForPipeline(supabase, changedChecks)` wires the real functions and is what the
+  cron routes call).
+- **This is where the impact scorer actually gets called from, for the first time** — confirmed as
+  the right place: `changeDetector.ts`'s own Chunk 1.4 docstring already said a status difference
+  "feeds the Impact Scorer (Chunk 3)." Both `poll-gst`/`poll-msme` cron routes now call
+  `processChangeAlertsForPipeline` right after `runPoll`, identically. No new API route, no UI —
+  matches Chunk 3.1's "not user-facing yet" framing; the alerts UI is Chunk 3.3.
+- **A recurring TypeScript issue, now with a fix worth remembering:** passing a real
+  `SupabaseClient<Database>` anywhere a hand-written narrow interface (`PaymentsClient`,
+  `AlertsClient`) is expected can hit `TS2589` ("type instantiation is excessively deep") — the
+  chained `.from().select().eq().eq()...` builder interfaces are deep enough to trigger it; the
+  flatter single-method `RpcClient` pattern from Chunk 2.1 never did. Fix: cast once
+  (`supabase as unknown as PaymentsClient & AlertsClient`) inside the one function that bridges real
+  code to the narrow interface (`processChangeAlertsForPipeline`), never at every call site.
+
 **Testing.**
 - Playwright e2e lives in `e2e/`. Run `npm run test:e2e`.
 - `e2e/auth.spec.ts` covers sign-up, log out, log in, the protected-route redirect, and the wrong-password inline error.
@@ -431,6 +472,18 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
   scores it before and after seeding a `pending` payment, and re-queries `verification_checks`
   directly both times to prove scoring never touches that table — the literal "the audit trail
   isn't suppressed" acceptance check.
+- `lib/alerts/createOrUpdateAlert.test.ts` and `processChangeAlerts.test.ts` (Vitest, hermetic,
+  injected fakes) cover Chunk 3.2: create-vs-update dedupe branching, `check_type → trigger_type`
+  mapping, and that only alert-worthy changes ever reach `createOrUpdateAlert`.
+  `impactScorer.test.ts` gained cases for `getOpenPaymentAmount` (sums multiple pending rows, 0 when
+  none).
+- `lib/alerts/processChangeAlerts.integration.test.ts` is a **live-DB** integration test (needs
+  migrations 0003, 0006, 0007 applied): runs the real `runPoll` twice to get a genuine changed
+  vendor, seeds an open payment, and asserts one alert is created with the right
+  `trigger_type`/`source_check_id`/`payment_impact_amount`; triggers a second real change on the
+  same vendor and a second payment, and asserts the *same* alert row is updated (new summed amount,
+  `source_check_id` unchanged) rather than a duplicate appearing; and asserts a changed vendor with
+  no payment produces zero alert rows.
 
 ### Operational notes
 
@@ -446,15 +499,15 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
 ### Next chunk
 
 Phase 1 and Phase 2 (onboarding-only verification: bank + certificates) are both complete. Phase 3
-(alerting) is underway — Chunk 3.1 (impact scorer) is done. Next:
+(alerting) is underway — Chunks 3.1 (impact scorer) and 3.2 (alert generation + dedupe) are both
+done: `poll-gst`/`poll-msme` now score every detected change and write/dedupe `alerts` rows for real.
+Next:
 
-- **Chunk 3.2 — Alert generation + dedupe** (`alerts`). Wires `lib/alerts/impactScorer.ts`'s
-  `scoreChangeForVendor` into the actual pipeline (nothing calls it yet) — likely from the
-  `poll-gst`/`poll-msme` cron routes, right after `runPoll` writes each `verification_checks` row.
-  Creates an `alerts` row only when `alertWorthy` is true. Dedupes per `vendor_id` + `trigger_type`
-  (ERD "Key business rules"): a repeat detection updates the open alert's `payment_impact_amount`
-  rather than creating a new row, until the prior one reaches `cleared`/`escalated`.
-- **Chunk 3.3 — Alert UI + one-tap actions + Resend email.**
+- **Chunk 3.3 — Alert UI + one-tap actions + Resend email.** First user-facing surface for
+  `alerts` — everything through 3.2 has been cron-pipeline-internal. Needs `GET /api/alerts` and
+  `POST /api/alerts/:id/action` (`{ action: hold | reviewed | escalate }`, 409 if already resolved
+  per the ERD) plus a list/detail UI, likely following the `app/vendors` + `lib/vendors/queries.ts`
+  shared-query-helper pattern.
 - **Revisit `POST /api/vendors/:id/flag`** (`app/api/vendors/[id]/flag/route.ts`) once certificate
   re-verification is needed — it currently handles bank re-verification only.
 - **Live adapters still stubbed, lowest priority:** `lib/providers/bank/ekoAdapter.ts`

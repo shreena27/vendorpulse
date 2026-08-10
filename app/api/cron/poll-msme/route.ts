@@ -4,6 +4,7 @@ import { getMsmeAdapter } from "@/lib/providers/msme";
 import { isAuthorizedCron } from "@/lib/verification/cronAuth";
 import { runPoll } from "@/lib/verification/pollRunner";
 import { mapMsmeStatusToVendor } from "@/lib/verification/changeDetector";
+import { processChangeAlertsForPipeline } from "@/lib/alerts/processChangeAlerts";
 
 // Vercel Cron triggers this daily via GET with `Authorization: Bearer
 // $CRON_SECRET` (see vercel.json). POST is accepted too for manual runs. Node
@@ -29,7 +30,9 @@ async function handle(request: Request) {
       runCheck: (udyam) => adapter.checkUdyam(udyam),
       mapStatus: mapMsmeStatusToVendor,
     });
-    return NextResponse.json({ ok: true, ...summary });
+    const { changedChecks, ...counts } = summary;
+    const alerts = await processChangeAlertsForPipeline(supabase, changedChecks);
+    return NextResponse.json({ ok: true, ...counts, alerts });
   } catch (err) {
     const message = err instanceof Error ? err.message : "poll failed";
     return NextResponse.json({ ok: false, error: message }, { status: 500 });

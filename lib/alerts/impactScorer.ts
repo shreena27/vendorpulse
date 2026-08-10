@@ -74,10 +74,10 @@ export async function hasUnfavorableLeiCheck(): Promise<boolean> {
   return false;
 }
 
-/** Minimal Supabase client surface this function needs — easy to stub in tests. */
+/** Minimal Supabase client surface these functions need — easy to stub in tests. */
 export interface PaymentsClient {
   from(table: "payments"): {
-    select(columns: string): {
+    select(columns: "id"): {
       eq(
         column: "vendor_id",
         value: string,
@@ -90,6 +90,17 @@ export interface PaymentsClient {
             n: number,
           ): PromiseLike<{ data: { id: string }[] | null; error: { message: string } | null }>;
         };
+      };
+    };
+    select(columns: "amount"): {
+      eq(
+        column: "vendor_id",
+        value: string,
+      ): {
+        eq(
+          column2: "status",
+          value2: "pending",
+        ): PromiseLike<{ data: { amount: string }[] | null; error: { message: string } | null }>;
       };
     };
   };
@@ -109,6 +120,27 @@ export async function hasOpenPendingPayment(
     throw new Error(`open-payment lookup failed: ${error.message}`);
   }
   return (data ?? []).length > 0;
+}
+
+/**
+ * Sums `amount` across every pending payment for the vendor (0 if none).
+ * Used only by Chunk 3.2's alert-creation step, to populate
+ * `alerts.payment_impact_amount` — not by `scoreChange` itself, which only
+ * needs the boolean.
+ */
+export async function getOpenPaymentAmount(
+  supabase: PaymentsClient,
+  vendorId: string,
+): Promise<number> {
+  const { data, error } = await supabase
+    .from("payments")
+    .select("amount")
+    .eq("vendor_id", vendorId)
+    .eq("status", "pending");
+  if (error) {
+    throw new Error(`open-payment amount lookup failed: ${error.message}`);
+  }
+  return (data ?? []).reduce((sum, row) => sum + Number(row.amount), 0);
 }
 
 /** Wires the real dependencies together. Nothing calls this yet — Chunk 3.2

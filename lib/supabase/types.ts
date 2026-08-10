@@ -24,6 +24,8 @@ export type BankProvider = "eko" | "mock";
 export type CertificateStatus = "valid" | "expired";
 export type PaymentStatus = "pending" | "paid" | "cancelled";
 export type PaymentMethod = "rtgs" | "neft" | "other";
+export type AlertTriggerType = "gst_change" | "msme_change" | "lei_check";
+export type AlertStatus = "open" | "hold" | "reviewed" | "cleared" | "escalated";
 export type VendorSource = "tally" | "excel" | "erp_sync";
 export type ImportSource = "tally_export" | "excel" | "erp_sync";
 export type ImportStatus =
@@ -380,6 +382,67 @@ export type Database = {
             foreignKeyName: "payments_vendor_id_fkey";
             columns: ["vendor_id"];
             referencedRelation: "vendors";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      alerts: {
+        Row: {
+          id: string;
+          organization_id: string;
+          vendor_id: string;
+          trigger_type: AlertTriggerType;
+          // No FK: points into verification_checks (or, later, lei_checks)
+          // depending on trigger_type — same polymorphic-reference pattern
+          // as evidence_log.
+          source_check_id: string;
+          payment_impact_amount: string;
+          status: AlertStatus;
+          resolved_by: string | null;
+          resolved_at: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          organization_id: string;
+          vendor_id: string;
+          trigger_type: AlertTriggerType;
+          source_check_id: string;
+          payment_impact_amount?: string;
+          status?: AlertStatus;
+          resolved_by?: string | null;
+          resolved_at?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          organization_id?: string;
+          vendor_id?: string;
+          trigger_type?: AlertTriggerType;
+          source_check_id?: string;
+          payment_impact_amount?: string;
+          status?: AlertStatus;
+          resolved_by?: string | null;
+          resolved_at?: string | null;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "alerts_organization_id_fkey";
+            columns: ["organization_id"];
+            referencedRelation: "organizations";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "alerts_vendor_id_fkey";
+            columns: ["vendor_id"];
+            referencedRelation: "vendors";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "alerts_resolved_by_fkey";
+            columns: ["resolved_by"];
+            referencedRelation: "users";
             referencedColumns: ["id"];
           },
         ];

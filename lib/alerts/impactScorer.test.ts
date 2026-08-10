@@ -4,6 +4,7 @@ import {
   hasUnfavorableLeiCheck,
   hasOpenPendingPayment,
   scoreChangeForVendor,
+  getOpenPaymentAmount,
   type PaymentsClient,
 } from "./impactScorer";
 
@@ -94,6 +95,38 @@ describe("hasOpenPendingPayment", () => {
   it("throws on a query error rather than silently reporting false", async () => {
     const client = stubPaymentsClient(null, { message: "connection lost" });
     await expect(hasOpenPendingPayment(client, "v1")).rejects.toThrow(/connection lost/);
+  });
+});
+
+/** Same shape as stubPaymentsClient, but for the amount-summing query (no .limit()). */
+function stubAmountClient(
+  rows: { amount: string }[] | null,
+  error: { message: string } | null = null,
+): PaymentsClient {
+  const builder = {
+    select: () => builder,
+    eq: () => builder,
+    then: (
+      resolve?: ((v: { data: typeof rows; error: typeof error }) => unknown) | null,
+    ) => Promise.resolve(resolve?.({ data: rows, error })),
+  };
+  return { from: () => builder } as unknown as PaymentsClient;
+}
+
+describe("getOpenPaymentAmount", () => {
+  it("sums the amount across all pending payment rows for the vendor", async () => {
+    const client = stubAmountClient([{ amount: "1000" }, { amount: "2500.50" }]);
+    expect(await getOpenPaymentAmount(client, "v1")).toBe(3500.5);
+  });
+
+  it("is 0 when there are no pending payments", async () => {
+    const client = stubAmountClient([]);
+    expect(await getOpenPaymentAmount(client, "v1")).toBe(0);
+  });
+
+  it("throws on a query error rather than silently reporting 0", async () => {
+    const client = stubAmountClient(null, { message: "connection lost" });
+    await expect(getOpenPaymentAmount(client, "v1")).rejects.toThrow(/connection lost/);
   });
 });
 

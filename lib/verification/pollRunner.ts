@@ -20,6 +20,7 @@ import {
   type CheckOutcome,
   type VendorRef,
 } from "./changeDetector";
+import type { ChangedCheck } from "@/lib/alerts/processChangeAlerts";
 
 type Admin = SupabaseClient<Database>;
 
@@ -43,6 +44,9 @@ export interface PollSummary {
   checked: number;
   changes: number;
   unknown: number;
+  /** The is_change = true subset, with each row's own DB id — feeds the
+   * impact scorer / alert pipeline (Chunk 3.2). */
+  changedChecks: ChangedCheck[];
 }
 
 export async function runPoll(config: PollConfig): Promise<PollSummary> {
@@ -67,7 +71,7 @@ export async function runPoll(config: PollConfig): Promise<PollSummary> {
 
   const vendors = (vendorData ?? []).filter((v) => v[vendorField]);
   if (vendors.length === 0) {
-    return { checkType, checked: 0, changes: 0, unknown: 0 };
+    return { checkType, checked: 0, changes: 0, unknown: 0, changedChecks: [] };
   }
 
   // 2. Latest prior status_value per vendor for this check_type, in one query.
@@ -122,10 +126,13 @@ export async function runPoll(config: PollConfig): Promise<PollSummary> {
     Array.from({ length: Math.min(concurrency, vendors.length) }, worker),
   );
 
-  // 4. Append every check row (verification_checks is append-only).
-  const { error: insErr } = await supabase
+  // 4. Append every check row (verification_checks is append-only). Select
+  // the DB-generated ids back — the alert pipeline (Chunk 3.2) needs them
+  // for alerts.source_check_id.
+  const { data: insertedChecks, error: insErr } = await supabase
     .from("verification_checks")
-    .insert(checks);
+    .insert(checks)
+    .select("id, organization_id, vendor_id, check_type, is_change");
   if (insErr) throw new Error(`insert checks failed: ${insErr.message}`);
 
   // 5. Update each vendor's current status, grouped by target status so this is
@@ -147,10 +154,20 @@ export async function runPoll(config: PollConfig): Promise<PollSummary> {
     if (upErr) throw new Error(`update vendors failed: ${upErr.message}`);
   }
 
+  const changedChecks: ChangedCheck[] = (insertedChecks ?? [])
+    .filter((c) => c.is_change)
+    .map((c) => ({
+      id: c.id,
+      vendorId: c.vendor_id,
+      organizationId: c.organization_id,
+      checkType: c.check_type,
+    }));
+
   return {
     checkType,
     checked: checks.length,
     changes: checks.filter((c) => c.is_change).length,
     unknown: checks.filter((c) => c.status_value === "UNKNOWN").length,
+    changedChecks,
   };
 }

@@ -4,6 +4,7 @@ import { getGstAdapter } from "@/lib/providers/gst";
 import { isAuthorizedCron } from "@/lib/verification/cronAuth";
 import { runPoll } from "@/lib/verification/pollRunner";
 import { mapGstStatusToVendor } from "@/lib/verification/changeDetector";
+import { processChangeAlertsForPipeline } from "@/lib/alerts/processChangeAlerts";
 
 // Vercel Cron triggers this daily via GET with `Authorization: Bearer
 // $CRON_SECRET` (see vercel.json). POST is accepted too for manual runs. Node
@@ -28,7 +29,9 @@ async function handle(request: Request) {
       runCheck: (gstin) => adapter.checkGstin(gstin),
       mapStatus: mapGstStatusToVendor,
     });
-    return NextResponse.json({ ok: true, ...summary });
+    const { changedChecks, ...counts } = summary;
+    const alerts = await processChangeAlertsForPipeline(supabase, changedChecks);
+    return NextResponse.json({ ok: true, ...counts, alerts });
   } catch (err) {
     const message = err instanceof Error ? err.message : "poll failed";
     return NextResponse.json({ ok: false, error: message }, { status: 500 });
