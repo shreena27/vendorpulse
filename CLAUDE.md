@@ -326,6 +326,34 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
   existing vendor detail page and `lib/vendors/queries.ts` were not touched beyond one "Certificates →"
   nav link.
 
+**Chunk 3.1 — Impact scorer: DONE.**
+- `supabase/migrations/0006_payments.sql` creates `payments` (ERD §3.2, same RLS + grants pattern
+  as every prior table), brought forward from Phase 4 because scoring needs it now. `status` is a
+  minimal closed enum — `pending | paid | cancelled` — unlike `certificate_type` in 2.2 this one
+  *is* load-bearing for the scorer's query, so it wasn't left speculative-free-text. **No INSERT
+  policy for `authenticated` yet**: there is no payments-entry UI/API in this chunk (same "write
+  path doesn't exist yet" gap `verification_checks` had before 1.4); only the service role writes,
+  and tests seed directly through it.
+- `lib/alerts/impactScorer.ts`'s `scoreChange(input, deps)` is the decision logic, and it takes
+  **injected dependencies** rather than a raw Supabase client — mirrors `pollRunner.ts`'s
+  `runCheck` injection, the established way to keep DB-touching orchestration hermetically
+  unit-testable in this codebase. `isChange: false` short-circuits to non-alert-worthy without
+  calling either dependency; otherwise it's `hasOpenPendingPayment` OR `hasUnfavorableLeiCheck`
+  (payment checked first, so its reason wins if both are true).
+- `hasUnfavorableLeiCheck` is a **deliberate stub** — always resolves `false`, `TODO(chunk-4.3)`
+  states exactly what to build once `lei_checks` exists (payments ≥ ₹50cr RTGS/NEFT with an
+  unfavorable status) — do not guess the table shape now, same lesson as the Eko/Deepvue adapter
+  stubs. `hasOpenPendingPayment` is the real `payments` query (`vendor_id` + `status = 'pending'`).
+  `scoreChangeForVendor(supabase, input)` wires the real dependencies together — **nothing calls it
+  yet**; Chunk 3.2 (alert generation) will, from the actual pipeline. This chunk is scoring logic
+  only: no new API route, no changes to `pollRunner.ts` or the cron routes.
+- **Scoring is fully decoupled from the audit trail by construction** — `impactScorer.ts` never
+  reads or writes `verification_checks`; it only takes that row's `is_change` value as input. The
+  integration test proves this isn't just an assumption: it runs the real Chunk 1.4 `runPoll` to
+  produce a genuine `is_change = true` row, scores it once with no payment (not alert-worthy) and
+  once after seeding a `pending` payment (alert-worthy), and re-queries `verification_checks`
+  directly both times to confirm the row is identical either way.
+
 **Testing.**
 - Playwright e2e lives in `e2e/`. Run `npm run test:e2e`.
 - `e2e/auth.spec.ts` covers sign-up, log out, log in, the protected-route redirect, and the wrong-password inline error.
@@ -394,6 +422,15 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
   upload shows "Valid," a past-dated upload shows "Expired" immediately, and a `.exe` upload is
   rejected with an inline error while the admin client's `storage.list()` on that vendor's folder
   confirms nothing was left behind.
+- `lib/alerts/impactScorer.test.ts` (Vitest, hermetic, injected fake dependencies) covers Chunk
+  3.1's decision logic: all four payment/LEI combinations, the `isChange: false` short-circuit
+  (asserting neither dependency is even called), and that `hasUnfavorableLeiCheck` always resolves
+  `false`.
+- `lib/alerts/impactScorer.integration.test.ts` is a **live-DB** integration test (needs migrations
+  0003 and 0006 applied): runs the real `runPoll` to produce a genuine `is_change = true` row,
+  scores it before and after seeding a `pending` payment, and re-queries `verification_checks`
+  directly both times to prove scoring never touches that table — the literal "the audit trail
+  isn't suppressed" acceptance check.
 
 ### Operational notes
 
@@ -408,14 +445,15 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
 
 ### Next chunk
 
-Phase 1 and Phase 2 (onboarding-only verification: bank + certificates) are both complete. Next is
-Phase 3 — alerting (may run in parallel with any remaining Phase 2 polish):
+Phase 1 and Phase 2 (onboarding-only verification: bank + certificates) are both complete. Phase 3
+(alerting) is underway — Chunk 3.1 (impact scorer) is done. Next:
 
-- **Chunk 3.1 — Impact scorer** (adds `payments`: open POs / pending payments, needed for the
-  45-day MSME window and the ₹50cr LEI threshold).
-- **Chunk 3.2 — Alert generation + dedupe** (`alerts`). An alert fires only when a change hits a
-  vendor with a pending payment, or a LEI check resolves badly for a payment in flight (ERD "Key
-  business rules"). Dedupes per `vendor_id` + `trigger_type`.
+- **Chunk 3.2 — Alert generation + dedupe** (`alerts`). Wires `lib/alerts/impactScorer.ts`'s
+  `scoreChangeForVendor` into the actual pipeline (nothing calls it yet) — likely from the
+  `poll-gst`/`poll-msme` cron routes, right after `runPoll` writes each `verification_checks` row.
+  Creates an `alerts` row only when `alertWorthy` is true. Dedupes per `vendor_id` + `trigger_type`
+  (ERD "Key business rules"): a repeat detection updates the open alert's `payment_impact_amount`
+  rather than creating a new row, until the prior one reaches `cleared`/`escalated`.
 - **Chunk 3.3 — Alert UI + one-tap actions + Resend email.**
 - **Revisit `POST /api/vendors/:id/flag`** (`app/api/vendors/[id]/flag/route.ts`) once certificate
   re-verification is needed — it currently handles bank re-verification only.
