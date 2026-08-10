@@ -8,8 +8,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `npm run build` — production build.
 - `npm start` — serve the production build (run `build` first).
 - `npm run lint` — run ESLint (flat config, `eslint.config.mjs`).
+- `npm test` — run Vitest unit tests once (`test:watch` for watch mode).
+- `npm run test:e2e` — run the Playwright end-to-end tests.
 
-No test runner is configured yet. `npm test` does not exist; add a framework (e.g. Vitest or Jest) before writing tests.
+Two test runners, kept apart: **Vitest** for server-side unit tests (`lib/**/*.test.ts`, config in
+`vitest.config.mts`); **Playwright** for browser end-to-end tests (`e2e/`, config in
+`playwright.config.ts`). The Vitest config excludes `e2e/` so the two never collide.
 
 ## Stack and versions
 
@@ -156,6 +160,28 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
 - `app/vendors/import/page.tsx` is the upload + column-mapping UI. `app/vendors/page.tsx` is a
   minimal RLS-scoped list (the full status dashboard is Chunk 1.5).
 
+**Chunk 1.2 — GST provider adapter (Sandbox by Quicko) + mock: DONE.**
+- `lib/providers/gst/` holds a common `GstProviderAdapter` interface (`types.ts`), a live
+  `sandboxAdapter.ts`, a deterministic `mockAdapter.ts`, and `index.ts` (`getGstAdapter()` selector).
+  Every adapter returns the same `GstCheckResult` shape, so the poller (1.4) never knows which
+  provider answered. Server-only — never import these into a client component (the secret must not
+  reach the browser). No DB writes and no API route yet; 1.4 wires it to `verification_checks`.
+- **Provider selection:** `GST_PROVIDER=sandbox|mock`. Unset → sandbox when both `SANDBOX_API_KEY`
+  and `SANDBOX_API_SECRET` are set, else mock (ship-against-mock, ERD §12).
+- **Sandbox auth is two-step and handled inside the adapter:** POST key+secret to `/authenticate`
+  (`x-api-version 1.0.0`) for a ~24h token at `data.access_token`; the adapter caches it (JWT `exp`,
+  with a fallback TTL) and sends it as the raw `authorization` header (no `Bearer`) on
+  `/gst/compliance/public/gstin/search` (`x-api-version 1.0`, body `{ gstin }`).
+- **Confirmed live-API quirks (verified, not assumed):** Sandbox validates the GSTIN **checksum** and
+  returns `400 "Invalid GSTIN pattern"` for a bad one → mapped to `invalid_gstin`. The GST status is
+  nested at **`data.data.sts`** (`"Active"`/`"Cancelled"`/…). A not-registered GSTIN returns `200`
+  with `error_cd` and no `sts` → UNKNOWN. The adapter validates format first (reuses `GSTIN_REGEX`
+  from `lib/import/validateVendorRow.ts`) so a malformed GSTIN spends no provider call, and retries
+  once on timeout / 5xx / 401 before returning UNKNOWN — a failed check is never treated as compliant
+  (ERD §7).
+- **Secrets.** `.env.local` now also holds `SANDBOX_API_KEY` and `SANDBOX_API_SECRET` (server-only,
+  gitignored). These still need adding to Vercel before the 1.4 poller runs in production.
+
 **Testing.**
 - Playwright e2e lives in `e2e/`. Run `npm run test:e2e`.
 - `e2e/auth.spec.ts` covers sign-up, log out, log in, the protected-route redirect, and the wrong-password inline error.
@@ -163,7 +189,12 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
 - `e2e/vendor-import.spec.ts` covers Chunk 1.1: a good file imports and lists every vendor; a
   duplicate GSTIN is skipped and reported by row number (not merged or double-counted); an empty
   file shows a clear error, not a blank success.
-- The tests need `.env.local` and a reachable Supabase project. `playwright.config.ts` loads `.env.local` into the test process.
+- `lib/providers/gst/*.test.ts` (Vitest) cover Chunk 1.2: both adapters return the same shape;
+  active→ACTIVE, cancelled→CANCELLED, a mock timeout, a malformed GSTIN spends no provider call, a
+  provider 400, retry-once, 401 token refresh, and token caching. The Sandbox adapter test injects a
+  fake `fetch`, so no network is touched.
+- The e2e tests need `.env.local` and a reachable Supabase project. `playwright.config.ts` loads
+  `.env.local` into the test process. The Vitest unit tests need neither.
 
 ### Operational notes
 
@@ -174,10 +205,11 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
 
 ### Next chunk
 
-Chunk 1.2 — GST provider adapter (Sandbox by Quicko) + mock, behind the common `ProviderAdapter`
-interface. Ship against the mock when no live credential exists. Unit tests only (no UI yet): the
-same case matrix (active / cancelled / invalid GSTIN / provider timeout) must pass against both the
-live and mock adapters and return the same shape.
+Chunk 1.3 — MSME/Udyam provider adapter (Deepvue) + mock, following the exact same pattern as 1.2
+(`lib/providers/msme/`: `types.ts`, `deepvueAdapter.ts`, `mockAdapter.ts`, `index.ts`). Ship against
+the mock until Deepvue free-trial credentials exist. Unit tests only (no UI): valid / lapsed /
+malformed Udyam number and a provider timeout must pass against both adapters and return the same
+shape; a malformed Udyam number is rejected before any API call.
 
 <!-- BEGIN:nextjs-agent-rules -->
 
