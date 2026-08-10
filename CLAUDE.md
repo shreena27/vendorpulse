@@ -26,11 +26,11 @@ No test runner is configured yet. `npm test` does not exist; add a framework (e.
 
 ## Project: VendorPulse — Continuous Vendor Trust Monitoring
 
-> **This is the target spec, not the current code.** The repo is still a bare
-> scaffold. It has no Supabase, no `/api` routes, and no database tables yet.
-> The sections below describe what to build. The full source documents are in
-> `docs/`: `ERD - Engineering Requirements Document.docx` (data model, API,
-> logic), `Implementation Plan.docx` (build order), and `PRD Template [E2E].docx`
+> **This is the full target spec. The code builds it chunk by chunk.** See
+> "Current state" below for what is built so far. The rest describes what to
+> build next. The full source documents are in `docs/`:
+> `ERD - Engineering Requirements Document.docx` (data model, API, logic),
+> `Implementation Plan.docx` (build order), and `PRD Template [E2E].docx`
 > (product context). Treat the ERD as the source of truth for schema and contracts.
 
 ### What the product is
@@ -121,6 +121,39 @@ Build in order. Do not start a later phase until the phase before it works end-t
   - 5.3 End-to-end verification suite (one Playwright file per PRD §8 user story).
 
 Build principle: run every external API on a free tier or trial first — GLEIF (free), Sandbox (self-serve pay-per-call), Eko (sandbox credentials), Deepvue (free trial). If a capability has no free path when its chunk starts, ship that chunk against a mock adapter. Do not wait on a sales contract.
+
+### Current state (built so far)
+
+**Chunk 0.1 — auth + deploy: DONE.**
+- Supabase Auth with email and password. Sign-up needs "Confirm email" OFF in the Supabase dashboard, so a new user gets a session at once.
+- `lib/supabase/client.ts` (browser) and `lib/supabase/server.ts` (server) create typed Supabase clients. `lib/supabase/middleware.ts` refreshes the session. Root `middleware.ts` guards protected routes and sends signed-out users to `/login`.
+- Auth pages: `app/(auth)/login/page.tsx` and `app/(auth)/signup/page.tsx`, with server actions in `app/(auth)/actions.ts` (`login`, `signup`, `signOut`). Errors show inline. No redirect loop.
+- `app/dashboard/page.tsx` is the protected shell. `app/page.tsx` redirects to `/dashboard`.
+- The app deploys on Vercel. A push to `main` triggers a deploy.
+
+**Chunk 0.2 — core schema + RLS: DONE.**
+- `supabase/migrations/0001_core.sql` creates `organizations` and `users`.
+- The `handle_new_user()` trigger runs on `auth.users` insert. It creates one organization and one `users` row with role `admin`. So each new sign-up owns a new organization.
+- RLS isolates tenants. Policies use `public.current_org_id()`, a `SECURITY DEFINER` helper with `search_path = ''` (see [[supabase-security-definer-search-path]]). This avoids RLS recursion on `users`.
+- `lib/supabase/types.ts` holds a hand-written `Database` type. Regenerate it with the Supabase CLI later.
+- `app/dashboard/page.tsx` shows the caller's organization name and members (RLS-scoped).
+
+**Testing.**
+- Playwright e2e lives in `e2e/`. Run `npm run test:e2e`.
+- `e2e/auth.spec.ts` covers sign-up, log out, log in, the protected-route redirect, and the wrong-password inline error.
+- `e2e/rls.spec.ts` covers auto-provisioning and cross-tenant isolation (API level and UI level).
+- The tests need `.env.local` and a reachable Supabase project. `playwright.config.ts` loads `.env.local` into the test process.
+
+### Operational notes
+
+- **Migrations run by hand.** Apply each `supabase/migrations/*.sql` in the Supabase SQL Editor (or `supabase db push`). The Vercel deploy does NOT run migrations. There is no CI migration step yet.
+- **Every new table needs GRANTs.** PostgREST checks SQL grants BEFORE RLS. A table with policies but no grant returns `permission denied` (42501). Grant `select`/`insert`/`update`/`delete` to `authenticated` as the policy needs, and `all` to `service_role`. See section 6 of `0001_core.sql`.
+- **Secrets.** `.env.local` holds `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY`. It is gitignored. Never use the service-role key in client code.
+- **Deprecation.** Next.js 16.3 prints a warning that `middleware.ts` is deprecated in favor of `proxy.ts`. The file still works. A migration codemod exists.
+
+### Next chunk
+
+Chunk 1.1 — vendor bulk import: `vendors` and `vendor_imports` tables, `POST /api/vendors/import`, CSV/XLSX parse with column mapping, per-row validation, dedupe by GSTIN.
 
 <!-- BEGIN:nextjs-agent-rules -->
 
