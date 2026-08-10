@@ -77,7 +77,7 @@ test("good file imports every row and lists the vendors", async ({ page }) => {
 
   // Every vendor is listed.
   await page.goto("/vendors");
-  await expect(page.getByText("3 vendors on record")).toBeVisible();
+  await expect(page.getByText("Showing 3 of 3 vendors")).toBeVisible();
   await expect(page.getByText("Alpha Supplies")).toBeVisible();
   await expect(page.getByText("Bravo Traders")).toBeVisible();
   await expect(page.getByText("Charlie Corp")).toBeVisible();
@@ -111,7 +111,7 @@ test("duplicate GSTIN is skipped and reported, not double-counted", async ({
   // The shared GSTIN exists exactly once in the list — not merged, not doubled.
   await page.goto("/vendors");
   await expect(page.getByText(shared)).toHaveCount(1);
-  await expect(page.getByText("2 vendors on record")).toBeVisible();
+  await expect(page.getByText("Showing 2 of 2 vendors")).toBeVisible();
 });
 
 test("empty file shows a clear error, not a blank success", async ({ page }) => {
@@ -129,5 +129,5 @@ test("empty file shows a clear error, not a blank success", async ({ page }) => 
 
   // And nothing was created.
   await page.goto("/vendors");
-  await expect(page.getByText("0 vendors on record")).toBeVisible();
+  await expect(page.getByText(/No vendors yet/i)).toBeVisible();
 });

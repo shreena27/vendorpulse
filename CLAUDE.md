@@ -223,6 +223,28 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
   `evidence_log` yet (Chunks 3 / 4.1) — 1.4 only records checks and flips `is_change`.
 - **Secrets / Vercel:** `.env.local` now also holds `CRON_SECRET`. Before the cron runs in production,
   add `CRON_SECRET` and `SANDBOX_API_KEY`/`SANDBOX_API_SECRET` to Vercel; leave `GST_PROVIDER` unset.
+- **Deployed + verified in production.** Chunks 1.1–1.4 are live on Vercel; a production curl of the
+  cron endpoints confirmed the auth gate (401 without the Bearer secret) and a successful live-Sandbox
+  GST poll + mock MSME poll. That check also caught the middleware bug fixed below.
+
+**Chunk 1.5 — Vendor status dashboard: DONE.**
+- The recall flow (PRD §4.4) — the first read UI over the rows 1.1–1.4 produce. `app/vendors/page.tsx`
+  (a server shell) lists vendors via `app/vendors/VendorList.tsx` (a client component: search on
+  name/GSTIN + All / Needs attention / Pending chips). `app/vendors/[id]/page.tsx` is the detail view:
+  current GST/MSME/bank badges, identifiers, and the full `verification_checks` history in
+  chronological order. `app/vendors/StatusBadge.tsx` renders status pills that always carry a text
+  label (legible without color) plus a "Changed" marker.
+- `GET /api/vendors` and `GET /api/vendors/:id` (ERD §4) return the same data as JSON. Both the routes
+  and the pages call **shared helpers in `lib/vendors/queries.ts`** (RLS-scoped reads), so they never
+  drift. `lib/vendors/statusBadge.ts` holds the pure badge derivation, unit-tested for the tricky
+  cases: **Pending** (identifier present, no check yet) vs **Unknown** (checked, no answer) vs **N/A**
+  (no identifier).
+- **DPDP (ERD §6.3):** PAN is never in the list; on the detail view it is returned only to
+  `finance_head`/`admin` (gated in the query via the `role` column from Chunk 0.2), others see
+  "Restricted to finance". Note: this is app-layer gating — there is no column-level DB privilege yet,
+  so a determined org member could read `pan` via PostgREST directly. Harden with column privileges /
+  a view if that becomes a requirement.
+- Reads only — no new tables. Bank status stays `Unverified` for everyone until Chunk 2.1.
 
 **Testing.**
 - Playwright e2e lives in `e2e/`. Run `npm run test:e2e`.
@@ -247,6 +269,13 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
   fires on exactly the changed vendor and that one thrown check leaves the rest of the batch intact.
   Because the poller is global (all orgs), its assertions are scoped to the vendor ids it seeds, not
   global counts. Needs migration 0003 applied + `.env.local`; self-skips when the Supabase env is absent.
+- `lib/vendors/statusBadge.test.ts` (Vitest) covers Chunk 1.5's pure badge derivation: Pending vs
+  Unknown vs N/A, the status→tone mapping, and `isAttentionTone`.
+- `e2e/vendor-dashboard.spec.ts` covers Chunk 1.5: seeds poller output via the service-role client,
+  then asserts the list badges, the "Changed" flag, the Needs-attention/Pending filters, the detail
+  history in chronological order, and the zero-checks "pending" panel. Note: a heterogeneous PostgREST
+  bulk `insert([...])` sends NULL for keys some rows omit (bypassing column DEFAULTs) — seed rows must
+  share a uniform key set.
 - The e2e tests need `.env.local` and a reachable Supabase project. `playwright.config.ts` loads
   `.env.local` into the test process. The default Vitest unit tests need neither.
 
@@ -255,18 +284,24 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
 - **Migrations run by hand.** Apply each `supabase/migrations/*.sql` in the Supabase SQL Editor (or `supabase db push`). The Vercel deploy does NOT run migrations. There is no CI migration step yet.
 - **Every new table needs GRANTs.** PostgREST checks SQL grants BEFORE RLS. A table with policies but no grant returns `permission denied` (42501). Grant `select`/`insert`/`update`/`delete` to `authenticated` as the policy needs, and `all` to `service_role`. See section 6 of `0001_core.sql`.
 - **Secrets.** `.env.local` (gitignored) holds `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `SANDBOX_API_KEY`/`SANDBOX_API_SECRET` (GST provider), and `CRON_SECRET` (cron auth). Never use the service-role key in client code. The service-role/Sandbox/cron secrets are all server-only (no `NEXT_PUBLIC_` prefix). Mirror `SANDBOX_*` and `CRON_SECRET` into Vercel before the cron runs in production.
+- **Middleware guards pages, not APIs.** `lib/supabase/middleware.ts` redirects signed-out users to
+  `/login`, but **exempts `/api/*`** — API routes enforce their own auth and return JSON status codes
+  (401/404), never an HTML redirect. Without this exemption the cron routes 307-redirect to `/login`
+  before their `CRON_SECRET` check runs (found via a production curl).
 - **Deprecation.** Next.js 16.3 prints a warning that `middleware.ts` is deprecated in favor of `proxy.ts`. The file still works. A migration codemod exists.
 
 ### Next chunk
 
-Chunk 1.5 — Vendor status dashboard UI. Build `GET /api/vendors` (list with current status,
-filterable/sortable) and `GET /api/vendors/:id` (detail: current status + `verification_checks`
-history + certificates + open alerts). The list view shows each vendor's current GST/MSME status at a
-glance; the detail view shows the full check history in order. A vendor with a GST status change is
-visibly distinguishable from one with none; a vendor with zero checks yet (poller hasn't run) shows a
-`pending` state, not a blank or error. PAN/proprietor contact are DPDP-restricted — visible only to
-`finance_head`/`admin`, excluded from the general list (ERD §6.3). This is the first read UI over the
-rows 1.1–1.4 produce; tested with Playwright.
+Phase 1 is complete (import → GST/MSME adapters → daily polling + change detection → status
+dashboard). Phase 2 is onboarding-only verification:
+
+- **Chunk 2.1 — Bank account verification (Eko).** `CREATE TABLE bank_verifications` (ERD §3.2); a
+  one-time, per-vendor check triggered right after import (or on a manual re-flag via
+  `POST /api/vendors/:id/flag`). Calls Eko's sandbox/live API, stores a **masked** result
+  (last 4 digits only — never persist the full account number), and sets `current_bank_status`
+  (`verified` on an exact name match, `mismatch`/`manual_review` on a partial match). Ship against a
+  mock adapter until Eko sandbox credentials exist (same pattern as the GST/MSME adapters).
+- **Chunk 2.2 — Certificate upload** (`certificates`; Supabase Storage) runs after 2.1.
 
 <!-- BEGIN:nextjs-agent-rules -->
 

@@ -1,11 +1,11 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import { listVendorsWithStatus } from "@/lib/vendors/queries";
+import { VendorList } from "./VendorList";
 
-// Minimal vendor list. The full status dashboard (badges, detail view, filters)
-// lands in Chunk 1.5; this exists so an imported list is visible and gives the
-// e2e "see all vendors listed" check a stable target. RLS scopes the query to
-// the caller's own organization.
+// Vendor list: current GST/MSME/bank status at a glance, with a quick filter.
+// The first read UI over the rows Chunks 1.1–1.4 produce (PRD §4.4 recall flow).
 export default async function VendorsPage() {
   const supabase = await createClient();
   const {
@@ -15,12 +15,7 @@ export default async function VendorsPage() {
     redirect("/login");
   }
 
-  const { data: vendors } = await supabase
-    .from("vendors")
-    .select("id, name, gstin, current_gst_status, current_msme_status")
-    .order("created_at", { ascending: true });
-
-  const rows = vendors ?? [];
+  const vendors = await listVendorsWithStatus(supabase);
 
   return (
     <div className="flex flex-1 flex-col">
@@ -42,61 +37,11 @@ export default async function VendorsPage() {
             Vendors
           </h1>
           <p className="text-zinc-600 dark:text-zinc-400">
-            {rows.length} {rows.length === 1 ? "vendor" : "vendors"} on record.
+            Continuous GST and MSME status for your vendors.
           </p>
         </section>
 
-        {rows.length === 0 ? (
-          <p className="text-sm text-zinc-500 dark:text-zinc-400">
-            No vendors yet.{" "}
-            <Link
-              href="/vendors/import"
-              className="underline underline-offset-4"
-            >
-              Import your vendor list
-            </Link>{" "}
-            to get started.
-          </p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="min-w-full border-collapse text-left text-sm">
-              <thead>
-                <tr className="text-zinc-500 dark:text-zinc-400">
-                  <th className="border-b border-black/[.08] px-3 py-2 font-medium dark:border-white/[.12]">
-                    Name
-                  </th>
-                  <th className="border-b border-black/[.08] px-3 py-2 font-medium dark:border-white/[.12]">
-                    GSTIN
-                  </th>
-                  <th className="border-b border-black/[.08] px-3 py-2 font-medium dark:border-white/[.12]">
-                    GST status
-                  </th>
-                  <th className="border-b border-black/[.08] px-3 py-2 font-medium dark:border-white/[.12]">
-                    MSME status
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((v) => (
-                  <tr key={v.id} className="text-black dark:text-zinc-50">
-                    <td className="border-b border-black/[.04] px-3 py-2 dark:border-white/[.08]">
-                      {v.name}
-                    </td>
-                    <td className="border-b border-black/[.04] px-3 py-2 font-mono text-xs dark:border-white/[.08]">
-                      {v.gstin ?? "—"}
-                    </td>
-                    <td className="border-b border-black/[.04] px-3 py-2 dark:border-white/[.08]">
-                      {v.current_gst_status}
-                    </td>
-                    <td className="border-b border-black/[.04] px-3 py-2 dark:border-white/[.08]">
-                      {v.current_msme_status}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+        <VendorList vendors={vendors} />
       </main>
     </div>
   );
