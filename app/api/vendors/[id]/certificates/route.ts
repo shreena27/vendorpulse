@@ -3,6 +3,8 @@ import { createClient } from "@/lib/supabase/server";
 import { isAllowedCertificateFile } from "@/lib/certificates/validateCertificateFile";
 import { listVendorCertificatesWithUrls } from "@/lib/certificates/queries";
 import { uploadCertificate } from "@/lib/storage/uploadCertificate";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { track } from "@/lib/analytics/track";
 
 const EXPIRY_DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -87,6 +89,14 @@ export async function POST(
       certificateType,
       expiryDate,
     });
+    if (summary.status === "expired") {
+      await track(createAdminClient(), {
+        organizationId: vendor.organization_id,
+        vendorId: vendor.id,
+        eventType: "bank_cert_issue_caught",
+        payload: { kind: "certificate", certificateType, expiryDate },
+      });
+    }
     return NextResponse.json(summary);
   } catch (err) {
     return NextResponse.json(
