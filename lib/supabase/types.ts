@@ -32,6 +32,8 @@ export type EvidenceEventType =
   | "alert_created"
   | "alert_updated"
   | "alert_resolved";
+export type LeiCheckStatus = "issued" | "lapsed" | "retired" | "not_on_record";
+export type LeiProvider = "gleif";
 export type VendorSource = "tally" | "excel" | "erp_sync";
 export type ImportSource = "tally_export" | "excel" | "erp_sync";
 export type ImportStatus =
@@ -146,6 +148,7 @@ export type Database = {
           gstin: string | null;
           udyam_number: string | null;
           pan: string | null;
+          lei_number: string | null;
           current_gst_status: GstStatus;
           current_msme_status: MsmeStatus;
           current_bank_status: BankStatus;
@@ -161,6 +164,7 @@ export type Database = {
           gstin?: string | null;
           udyam_number?: string | null;
           pan?: string | null;
+          lei_number?: string | null;
           current_gst_status?: GstStatus;
           current_msme_status?: MsmeStatus;
           current_bank_status?: BankStatus;
@@ -176,6 +180,7 @@ export type Database = {
           gstin?: string | null;
           udyam_number?: string | null;
           pan?: string | null;
+          lei_number?: string | null;
           current_gst_status?: GstStatus;
           current_msme_status?: MsmeStatus;
           current_bank_status?: BankStatus;
@@ -498,6 +503,61 @@ export type Database = {
             foreignKeyName: "evidence_log_vendor_id_fkey";
             columns: ["vendor_id"];
             referencedRelation: "vendors";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      lei_checks: {
+        Row: {
+          id: string;
+          organization_id: string;
+          vendor_id: string;
+          payment_id: string;
+          lei_number: string | null;
+          status: LeiCheckStatus;
+          provider: LeiProvider;
+          raw_response: unknown;
+          checked_at: string;
+        };
+        Insert: {
+          id?: string;
+          organization_id: string;
+          vendor_id: string;
+          payment_id: string;
+          lei_number?: string | null;
+          status: LeiCheckStatus;
+          provider?: LeiProvider;
+          raw_response?: unknown;
+          checked_at?: string;
+        };
+        Update: {
+          id?: string;
+          organization_id?: string;
+          vendor_id?: string;
+          payment_id?: string;
+          lei_number?: string | null;
+          status?: LeiCheckStatus;
+          provider?: LeiProvider;
+          raw_response?: unknown;
+          checked_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "lei_checks_organization_id_fkey";
+            columns: ["organization_id"];
+            referencedRelation: "organizations";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "lei_checks_vendor_id_fkey";
+            columns: ["vendor_id"];
+            referencedRelation: "vendors";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "lei_checks_payment_id_fkey";
+            columns: ["payment_id"];
+            referencedRelation: "payments";
             referencedColumns: ["id"];
           },
         ];
