@@ -18,6 +18,7 @@ import {
   buildCheck,
   type BuiltCheck,
   type CheckOutcome,
+  type InsertedCheck,
   type VendorRef,
 } from "./changeDetector";
 import type { ChangedCheck } from "@/lib/alerts/processChangeAlerts";
@@ -47,6 +48,10 @@ export interface PollSummary {
   /** The is_change = true subset, with each row's own DB id — feeds the
    * impact scorer / alert pipeline (Chunk 3.2). */
   changedChecks: ChangedCheck[];
+  /** Every inserted row this run, with its DB id — feeds the evidence log
+   * (Chunk 4.1): one verification_check event per row, regardless of
+   * is_change. */
+  allChecks: InsertedCheck[];
 }
 
 export async function runPoll(config: PollConfig): Promise<PollSummary> {
@@ -71,7 +76,7 @@ export async function runPoll(config: PollConfig): Promise<PollSummary> {
 
   const vendors = (vendorData ?? []).filter((v) => v[vendorField]);
   if (vendors.length === 0) {
-    return { checkType, checked: 0, changes: 0, unknown: 0, changedChecks: [] };
+    return { checkType, checked: 0, changes: 0, unknown: 0, changedChecks: [], allChecks: [] };
   }
 
   // 2. Latest prior status_value per vendor for this check_type, in one query.
@@ -132,7 +137,7 @@ export async function runPoll(config: PollConfig): Promise<PollSummary> {
   const { data: insertedChecks, error: insErr } = await supabase
     .from("verification_checks")
     .insert(checks)
-    .select("id, organization_id, vendor_id, check_type, is_change");
+    .select("id, organization_id, vendor_id, check_type, status_value, provider, is_change");
   if (insErr) throw new Error(`insert checks failed: ${insErr.message}`);
 
   // 5. Update each vendor's current status, grouped by target status so this is
@@ -169,5 +174,6 @@ export async function runPoll(config: PollConfig): Promise<PollSummary> {
     changes: checks.filter((c) => c.is_change).length,
     unknown: checks.filter((c) => c.status_value === "UNKNOWN").length,
     changedChecks,
+    allChecks: insertedChecks ?? [],
   };
 }
