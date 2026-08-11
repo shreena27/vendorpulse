@@ -67,7 +67,19 @@ export interface MsmeEvidenceEntry {
 }
 
 /** Pure "as of" reduction for ONE payment's own due_date. `vendorEvidenceAscending`
- * must already be sorted ascending by createdAt (the fetch's own `order()` does this). */
+ * must already be sorted ascending by createdAt (the fetch's own `order()` does this).
+ *
+ * Confirmed (integration test, not assumed): PostgREST returns `created_at` in
+ * Postgres's own textual form (e.g. "2024-01-01T00:00:00+00:00", no trailing
+ * zero fractional seconds), not the "...Z" form this module's own
+ * `endOfDayIstIso` produces. Plain string `<=` comparison between the two
+ * forms is still correct: both use the same zero-padded YYYY-MM-DDTHH:MM:SS
+ * prefix, and at the point they diverge ('+' vs '.' vs digit vs 'Z') ASCII
+ * ordering happens to match chronological ordering ('+' < '.' < '0'-'9' <
+ * 'Z'), so a whole-second value (no fraction, "+00:00" suffix) always sorts
+ * before any positive-fraction value at the same whole second, and any
+ * differing minute/second digit dominates the comparison regardless of
+ * suffix format. */
 export function resolveMsmeStatusAsOf(
   udyamNumber: string | null,
   vendorEvidenceAscending: MsmeEvidenceEntry[],
