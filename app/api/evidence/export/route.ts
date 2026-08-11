@@ -4,6 +4,8 @@ import { getCallerContext } from "@/lib/vendors/queries";
 import { buildExport } from "@/lib/evidence/buildExport";
 import { formatExportCsv } from "@/lib/evidence/formatCsv";
 import { formatExportPdf } from "@/lib/evidence/formatPdf";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { track } from "@/lib/analytics/track";
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const FORMATS = new Set(["csv", "pdf"]);
@@ -49,6 +51,15 @@ export async function GET(request: Request) {
 
   const rows = await buildExport(supabase, { from, to });
   const filenameBase = `evidence-export-${from}-to-${to}`;
+
+  if (caller.organizationId) {
+    await track(createAdminClient(), {
+      organizationId: caller.organizationId,
+      eventType: "evidence_export_completed",
+      payload: { format, from, to, rowCount: rows.length },
+      actor: user.id,
+    });
+  }
 
   if (format === "pdf") {
     const pdf = await formatExportPdf(rows, { from, to });
