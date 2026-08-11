@@ -148,7 +148,7 @@ export async function processChangeAlertsForPipeline(
     scoreChangeForVendor: (input) => scoreChangeForVendor(client, input),
     getOpenPaymentAmount: (vendorId) => getOpenPaymentAmount(client, vendorId),
     createOrUpdateAlert: (input) => createOrUpdateAlert(client, input),
-    notifyAlertCreated: (alertId, check) => notifyAlertCreated(supabase, alertId, check),
+    notifyAlertCreated: (alertId, check) => notifyAlertCreated(supabase, alertId, check.organizationId),
     logAlertEvent: (result, check, triggerType, paymentImpactAmount) =>
       logEvent(supabase, {
         organizationId: check.organizationId,
@@ -161,14 +161,16 @@ export async function processChangeAlertsForPipeline(
   });
 }
 
-/** Real notifyAlertCreated: builds the nudge, finds the org's finance_head/
- * admin recipients, and sends via Resend. Thrown errors are caught by
- * processChangeAlerts's caller, not here — this function is allowed to
- * throw; non-fatal handling is the loop's job. */
-async function notifyAlertCreated(
+/** Builds the nudge, finds the org's finance_head/admin recipients, and
+ * sends via Resend. Exported so both the GST/MSME pipeline below AND the
+ * LEI check orchestrator (lib/lei/runLeiCheck.ts) can reuse the exact same
+ * "a new alert triggers an email" behavior — wording never drifts between
+ * alert types. Thrown errors are caught by the caller, not here; non-fatal
+ * handling is the caller's job. */
+export async function notifyAlertCreated(
   supabase: SupabaseClient<Database>,
   alertId: string,
-  check: ChangedCheck,
+  organizationId: string,
 ): Promise<void> {
   const alert = await getAlertNudgeById(supabase, alertId);
   if (!alert) {
@@ -178,7 +180,7 @@ async function notifyAlertCreated(
   const { data: recipients, error } = await supabase
     .from("users")
     .select("email")
-    .eq("organization_id", check.organizationId)
+    .eq("organization_id", organizationId)
     .in("role", ["finance_head", "admin"]);
   if (error) {
     throw new Error(`load alert recipients failed: ${error.message}`);
