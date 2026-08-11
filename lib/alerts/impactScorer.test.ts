@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import type { Database } from "@/lib/supabase/types";
 import {
   scoreChange,
-  hasUnfavorableLeiCheck,
   hasOpenPendingPayment,
   scoreChangeForVendor,
   getOpenPaymentAmount,
@@ -51,17 +52,6 @@ describe("scoreChange", () => {
     await scoreChange({ vendorId: "vendor-42", isChange: true }, d);
     expect(d.hasOpenPendingPayment).toHaveBeenCalledWith("vendor-42");
     expect(d.hasUnfavorableLeiCheck).toHaveBeenCalledWith("vendor-42");
-  });
-});
-
-describe("hasUnfavorableLeiCheck (deliberate stub, Chunk 4.3 not built yet)", () => {
-  it("always resolves false", async () => {
-    expect(await hasUnfavorableLeiCheck()).toBe(false);
-  });
-
-  it("satisfies the (vendorId) => Promise<boolean> shape ScoreChangeDeps expects, and still resolves false when called with one", async () => {
-    const dep: (vendorId: string) => Promise<boolean> = hasUnfavorableLeiCheck;
-    expect(await dep("some-vendor")).toBe(false);
   });
 });
 
@@ -130,15 +120,70 @@ describe("getOpenPaymentAmount", () => {
   });
 });
 
+/** A thenable resolving to a fixed { data, error } result, independent of
+ * whichever chain method returns it — lets one stub client distinguish
+ * "the hasOpenPendingPayment chain" (ends in .limit()) from "the
+ * qualifying-payments-for-LEI chain" (ends in .gte()), which otherwise both
+ * query .from("payments") and would collide on a single shared response. */
+function thenable(rows: unknown[]) {
+  return {
+    then: (resolve?: ((v: { data: unknown[]; error: null }) => unknown) | null) =>
+      Promise.resolve(resolve?.({ data: rows, error: null })),
+  };
+}
+
+function stubScoreVendorClient(opts: {
+  openPaymentRows?: { id: string }[];
+  qualifyingPaymentRows?: { id: string }[];
+  leiCheckRows?: { status: string }[];
+}): SupabaseClient<Database> {
+  const paymentsBuilder: Record<string, (...args: unknown[]) => unknown> = {
+    select: () => paymentsBuilder,
+    eq: () => paymentsBuilder,
+    in: () => paymentsBuilder,
+    limit: () => thenable(opts.openPaymentRows ?? []),
+    gte: () => thenable(opts.qualifyingPaymentRows ?? []),
+  };
+  const leiChecksBuilder: Record<string, (...args: unknown[]) => unknown> = {
+    select: () => leiChecksBuilder,
+    in: () => leiChecksBuilder,
+    limit: () => thenable(opts.leiCheckRows ?? []),
+  };
+  const client = {
+    from: (table: string) => (table === "lei_checks" ? leiChecksBuilder : paymentsBuilder),
+  };
+  return client as unknown as SupabaseClient<Database>;
+}
+
 describe("scoreChangeForVendor (real dependencies wired together)", () => {
   it("is alert-worthy when the wired payments query finds an open payment", async () => {
-    const client = stubPaymentsClient([{ id: "p1" }]);
+    const client = stubScoreVendorClient({ openPaymentRows: [{ id: "p1" }] });
     const result = await scoreChangeForVendor(client, { vendorId: "v1", isChange: true });
     expect(result).toEqual({ alertWorthy: true, reason: "open_payment" });
   });
 
-  it("is not alert-worthy when the wired payments query finds nothing (LEI stub is always false)", async () => {
-    const client = stubPaymentsClient([]);
+  it("is not alert-worthy when there's no open payment and no qualifying LEI-checkable payment", async () => {
+    const client = stubScoreVendorClient({});
+    const result = await scoreChangeForVendor(client, { vendorId: "v1", isChange: true });
+    expect(result).toEqual({ alertWorthy: false, reason: "no_open_payment" });
+  });
+
+  it("is alert-worthy via the LEI path when there's no open payment but a qualifying payment has an unfavorable lei_checks row", async () => {
+    const client = stubScoreVendorClient({
+      openPaymentRows: [],
+      qualifyingPaymentRows: [{ id: "p-qualifying" }],
+      leiCheckRows: [{ status: "lapsed" }],
+    });
+    const result = await scoreChangeForVendor(client, { vendorId: "v1", isChange: true });
+    expect(result).toEqual({ alertWorthy: true, reason: "lei_unfavorable" });
+  });
+
+  it("is not alert-worthy when a qualifying payment exists but its lei_checks row is favorable (issued)", async () => {
+    const client = stubScoreVendorClient({
+      openPaymentRows: [],
+      qualifyingPaymentRows: [{ id: "p-qualifying" }],
+      leiCheckRows: [], // the unfavorable-status filter finds nothing
+    });
     const result = await scoreChangeForVendor(client, { vendorId: "v1", isChange: true });
     expect(result).toEqual({ alertWorthy: false, reason: "no_open_payment" });
   });

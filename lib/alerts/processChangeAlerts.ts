@@ -145,7 +145,7 @@ export async function processChangeAlertsForPipeline(
 ): Promise<ProcessChangeAlertsSummary> {
   const client = supabase as unknown as PaymentsClient & AlertsClient;
   return processChangeAlerts(changedChecks, {
-    scoreChangeForVendor: (input) => scoreChangeForVendor(client, input),
+    scoreChangeForVendor: (input) => scoreChangeForVendor(supabase, input),
     getOpenPaymentAmount: (vendorId) => getOpenPaymentAmount(client, vendorId),
     createOrUpdateAlert: (input) => createOrUpdateAlert(client, input),
     notifyAlertCreated: (alertId, check) => notifyAlertCreated(supabase, alertId, check.organizationId),

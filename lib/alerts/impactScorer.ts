@@ -2,15 +2,16 @@
  * Impact scorer (Chunk 3.1). Decides whether a detected change is worth
  * surfacing as an alert (ERD "Key business rules"): only when the vendor has
  * an open pending payment, or a LEI check resolves unfavorably for a payment
- * in flight. `lei_checks` doesn't exist until Chunk 4.3 — that check is a
- * deliberate stub (see below), same pattern as the Deepvue/Eko adapter
- * stubs.
+ * in flight.
  *
  * This module is purely the scoring decision. Nothing here writes to or
  * reads from `verification_checks` — that table is written unconditionally
- * by the poller (Chunk 1.4), regardless of what this function decides. No
- * pipeline calls `scoreChangeForVendor` yet; that's Chunk 3.2.
+ * by the poller (Chunk 1.4), regardless of what this function decides.
  */
+
+import type { SupabaseClient } from "@supabase/supabase-js";
+import type { Database, LeiCheckStatus } from "@/lib/supabase/types";
+import { LEI_THRESHOLD } from "@/lib/lei/qualifiesForLeiCheck";
 
 export interface ScoreChangeInput {
   vendorId: string;
@@ -56,22 +57,40 @@ export async function scoreChange(
   return { alertWorthy: false, reason: "no_open_payment" };
 }
 
+const UNFAVORABLE_LEI_STATUSES: LeiCheckStatus[] = ["lapsed", "retired", "not_on_record"];
+
 /**
- * DELIBERATE STUB — lei_checks doesn't exist until Chunk 4.3, so this
- * always resolves false rather than guessing at a table that isn't built.
- * Same pattern as lib/providers/bank/ekoAdapter.ts.
- *
- * TODO(chunk-4.3): once lei_checks exists, query it for this vendor's
- * payments that are RTGS/NEFT and >= ₹50cr (ERD §3.2 threshold), and return
- * true when the matching lei_checks.status is lapsed/retired/not_on_record.
- * Verify the live GLEIF response shape before writing this — do not guess.
+ * True when this vendor has at least one qualifying payment (RTGS/NEFT,
+ * >= LEI_THRESHOLD — lib/lei/qualifiesForLeiCheck.ts) whose lei_checks row
+ * came back lapsed, retired, or not_on_record. Written directly against the
+ * concrete client (not a narrow interface) — no hermetic unit-testing need
+ * strong enough to justify one; covered by impactScorer.integration.test.ts
+ * instead (same call as Chunk 4.2's buildExport.ts real fetch functions).
  */
-// The vendorId argument is intentionally omitted: this stub returns false
-// before it would ever use it. The real implementation will take it (see the
-// TODO above) — ScoreChangeDeps still types this as (vendorId) => ..., and a
-// function with fewer parameters satisfies that.
-export async function hasUnfavorableLeiCheck(): Promise<boolean> {
-  return false;
+export async function hasUnfavorableLeiCheckForVendor(
+  supabase: SupabaseClient<Database>,
+  vendorId: string,
+): Promise<boolean> {
+  const { data: payments, error: pErr } = await supabase
+    .from("payments")
+    .select("id")
+    .eq("vendor_id", vendorId)
+    .in("payment_method", ["rtgs", "neft"])
+    .gte("amount", LEI_THRESHOLD);
+  if (pErr) throw new Error(`qualifying payments lookup failed: ${pErr.message}`);
+
+  const paymentIds = (payments ?? []).map((p) => p.id);
+  if (paymentIds.length === 0) return false;
+
+  const { data: checks, error: cErr } = await supabase
+    .from("lei_checks")
+    .select("status")
+    .in("payment_id", paymentIds)
+    .in("status", UNFAVORABLE_LEI_STATUSES)
+    .limit(1);
+  if (cErr) throw new Error(`lei check lookup failed: ${cErr.message}`);
+
+  return (checks ?? []).length > 0;
 }
 
 /** Minimal Supabase client surface these functions need — easy to stub in tests. */
@@ -143,14 +162,20 @@ export async function getOpenPaymentAmount(
   return (data ?? []).reduce((sum, row) => sum + Number(row.amount), 0);
 }
 
-/** Wires the real dependencies together. Nothing calls this yet — Chunk 3.2
- * will, from the alert-generation pipeline. */
+/** Wires the real dependencies together. Takes the concrete client (not
+ * PaymentsClient) so it can call hasUnfavorableLeiCheckForVendor directly;
+ * the one `as unknown as PaymentsClient` cast this function needs for
+ * hasOpenPendingPayment lives here now, consolidated in the one place that
+ * bridges real code to that narrow interface — callers (e.g.
+ * processChangeAlertsForPipeline) just pass the real supabase client
+ * straight through, no pre-casting needed on their end. */
 export async function scoreChangeForVendor(
-  supabase: PaymentsClient,
+  supabase: SupabaseClient<Database>,
   input: ScoreChangeInput,
 ): Promise<ScoreResult> {
+  const paymentsClient = supabase as unknown as PaymentsClient;
   return scoreChange(input, {
-    hasOpenPendingPayment: (vendorId) => hasOpenPendingPayment(supabase, vendorId),
-    hasUnfavorableLeiCheck,
+    hasOpenPendingPayment: (vendorId) => hasOpenPendingPayment(paymentsClient, vendorId),
+    hasUnfavorableLeiCheck: (vendorId) => hasUnfavorableLeiCheckForVendor(supabase, vendorId),
   });
 }

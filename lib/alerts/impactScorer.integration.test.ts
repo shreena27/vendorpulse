@@ -6,7 +6,7 @@ import type { Database } from "@/lib/supabase/types";
 import { runPoll } from "@/lib/verification/pollRunner";
 import { mapMsmeStatusToVendor } from "@/lib/verification/changeDetector";
 import type { CheckOutcome } from "@/lib/verification/changeDetector";
-import { scoreChangeForVendor, type PaymentsClient } from "./impactScorer";
+import { scoreChangeForVendor } from "./impactScorer";
 
 // Load .env.local into process.env (the Vitest runner is a separate process).
 try {
@@ -37,11 +37,6 @@ const hasEnv = Boolean(SUPABASE_URL && ANON && SERVICE);
  */
 describe.skipIf(!hasEnv)("impact scorer (integration)", () => {
   let admin: SupabaseClient<Database>;
-  // scoreChangeForVendor takes the minimal PaymentsClient shape, not the full
-  // SupabaseClient<Database> type — casting once here avoids TypeScript
-  // trying (and failing, TS2589) to structurally compare the full client's
-  // deeply-generic query builder against the narrow interface at every call.
-  let paymentsClient: PaymentsClient;
   let userId: string;
   let orgId: string;
   let vendorId: string;
@@ -88,7 +83,6 @@ describe.skipIf(!hasEnv)("impact scorer (integration)", () => {
     admin = createClient<Database>(SUPABASE_URL!, SERVICE!, {
       auth: { persistSession: false, autoRefreshToken: false },
     });
-    paymentsClient = admin as unknown as PaymentsClient;
     const { data: userRow } = await admin
       .from("users")
       .select("organization_id")
@@ -131,7 +125,7 @@ describe.skipIf(!hasEnv)("impact scorer (integration)", () => {
     expect(changedCheck!.is_change).toBe(true);
 
     // No payment yet: not alert-worthy.
-    const beforePayment = await scoreChangeForVendor(paymentsClient, {
+    const beforePayment = await scoreChangeForVendor(admin, {
       vendorId,
       isChange: changedCheck!.is_change,
     });
@@ -152,7 +146,7 @@ describe.skipIf(!hasEnv)("impact scorer (integration)", () => {
     expect(pErr, pErr?.message).toBeNull();
 
     // Same detected change, now alert-worthy.
-    const afterPayment = await scoreChangeForVendor(paymentsClient, {
+    const afterPayment = await scoreChangeForVendor(admin, {
       vendorId,
       isChange: changedCheck!.is_change,
     });
@@ -161,5 +155,44 @@ describe.skipIf(!hasEnv)("impact scorer (integration)", () => {
     // Still exactly the same verification_checks row — scoring never wrote,
     // deleted, or otherwise touched it.
     expect(await latestCheck(vendorId)).toEqual(changedCheck);
+  });
+
+  it("is alert-worthy via an unfavorable LEI check even with no open pending payment — the literal Chunk 3.1 TODO, now real", async () => {
+    const { data: leiVendor, error: vErr } = await admin
+      .from("vendors")
+      .insert({ organization_id: orgId, name: "LEI Scorer Vendor", source: "excel" })
+      .select("id")
+      .single();
+    expect(vErr, vErr?.message).toBeNull();
+    const leiVendorId = leiVendor!.id;
+
+    // A qualifying payment (RTGS, >= LEI_THRESHOLD) — no `pending`-status
+    // payment is seeded at all, so the open-payment path alone would say
+    // "not alert-worthy".
+    const { data: payment, error: pErr } = await admin
+      .from("payments")
+      .insert({
+        organization_id: orgId,
+        vendor_id: leiVendorId,
+        amount: "600000000",
+        due_date: "2030-01-01",
+        payment_method: "rtgs",
+        status: "paid", // deliberately NOT pending — proves this isn't the open-payment path
+      })
+      .select("id")
+      .single();
+    expect(pErr, pErr?.message).toBeNull();
+
+    const { error: lErr } = await admin.from("lei_checks").insert({
+      organization_id: orgId,
+      vendor_id: leiVendorId,
+      payment_id: payment!.id,
+      lei_number: "5493003UOETFYRONLG31",
+      status: "lapsed",
+    });
+    expect(lErr, lErr?.message).toBeNull();
+
+    const result = await scoreChangeForVendor(admin, { vendorId: leiVendorId, isChange: true });
+    expect(result).toEqual({ alertWorthy: true, reason: "lei_unfavorable" });
   });
 });
