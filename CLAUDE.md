@@ -442,6 +442,43 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
   account's verified signup address until a custom domain is verified — expected, not a bug; the
   `processChangeAlerts.integration.test.ts` failure mode above is a direct consequence of this.
 
+**Chunk 4.1 — Evidence log wiring: DONE.**
+- `supabase/migrations/0009_evidence_log.sql` creates `evidence_log`. It is a
+  deliberate departure from every prior table's grant pattern: `service_role`
+  gets `SELECT, INSERT` only — never `ALL` — and `UPDATE`/`DELETE` are
+  explicitly revoked from `public`, `authenticated`, and `service_role`. This
+  makes the table physically append-only: even a bug in the app's own
+  privileged code path cannot alter or erase history. `authenticated` keeps
+  its usual org-scoped `SELECT` policy; there is no INSERT policy and never
+  will be — there's no RPC either, same "only the service role writes"
+  reasoning `verification_checks` used before Chunk 3.3-style RPCs existed
+  elsewhere. Same polymorphic `entity_type`/`entity_id` (no FK) pattern
+  `alerts.trigger_type`/`source_check_id` already used.
+- `lib/evidence/logEvent.ts` (`logEvent`/`logEvents`) is the one write path.
+  `EvidenceClient` is a deliberately flat single-method interface
+  (`from().insert()`) — the same shape as the `RpcClient` pattern from Chunk
+  2.1 that never hit the Chunk 3.2 TS2589 issue — so every real call site
+  passes the real `SupabaseClient<Database>` directly, no cast needed.
+- Five event types: `verification_check` (one per poll'd vendor, every run,
+  changed or not — `lib/verification/changeDetector.ts`'s new
+  `buildCheckEvidenceEvents`, called from both cron routes after `runPoll`);
+  `status_change` (one additional event for the `is_change = true` subset,
+  same call); `alert_created`/`alert_updated` (one per `createOrUpdateAlert`
+  result, via a new `logAlertEvent` dependency on
+  `lib/alerts/processChangeAlerts.ts`, wired in `processChangeAlertsForPipeline`);
+  `alert_resolved` (from `app/api/alerts/[id]/action/route.ts`, using the
+  admin client since `evidence_log` grants INSERT to `service_role` only —
+  the caller's own session client can't write it).
+- `lib/verification/pollRunner.ts`'s `PollSummary` gained `allChecks` (every
+  inserted row this run, with its DB id) alongside the existing
+  `changedChecks` (the `is_change` subset) — needed so the cron routes can
+  log one `verification_check` event per check, not just per change.
+- **Evidence-log writes are NOT covered by the "one failure never aborts the
+  batch" rule** (ERD §7) that applies to provider adapters and Resend email
+  elsewhere in this pipeline — that rule is for external calls; a silently
+  missing evidence row would defeat this chunk's purpose, so `logEvent`/
+  `logEvents` throw on error and every caller lets that throw propagate.
+
 **Testing.**
 - Playwright e2e lives in `e2e/`. Run `npm run test:e2e`.
 - `e2e/auth.spec.ts` covers sign-up, log out, log in, the protected-route redirect, and the wrong-password inline error.
@@ -547,6 +584,37 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
   PRD's own ₹4.1L example) + the alert row directly, visits `/alerts`, asserts the exact three-line
   nudge copy renders, clicks "Hold," and asserts the card updates in place — no reload — to
   "You held these payments," with all three action buttons gone.
+- `lib/evidence/logEvent.test.ts` (Vitest, hermetic) covers Chunk 4.1's
+  writer: default actor "system" vs. an explicit actor, batching multiple
+  events into one insert call, a no-op (no insert call at all) on an empty
+  batch, and that an insert error throws.
+- `lib/verification/changeDetector.test.ts` gained cases for
+  `buildCheckEvidenceEvents`: one event for an unchanged check, two
+  (verification_check + status_change) for a changed one, and the right
+  count across a mixed batch.
+- `lib/alerts/processChangeAlerts.test.ts` gained cases for the new
+  `logAlertEvent` dependency: called once per alert-worthy result (both
+  created and updated branches) with the right arguments, never called for a
+  non-alert-worthy change, and a rejection from it propagates instead of
+  being swallowed (unlike `notifyAlertCreated`).
+- `lib/evidence/evidenceLog.integration.test.ts` is a **live-DB** integration
+  test (needs migrations 0003, 0006, 0007, 0008, 0009 applied): runs a real
+  two-poll cycle (baseline, then a genuine change), seeds a payment, creates
+  a real alert via `processChangeAlertsForPipeline`, resolves it via
+  `resolveAlert`, and asserts the resulting `evidence_log` rows match
+  exactly — 2 `verification_check`, 1 `status_change`, 1 `alert_created`, 0
+  `alert_updated`, 1 `alert_resolved` — with each event's `entity_id`
+  matching its real source row. Because the poller and `evidence_log` are
+  both global (all orgs), the changed-check assertion is scoped to this
+  test's own seeded vendor id, same pattern
+  `processChangeAlerts.integration.test.ts` already established — found the
+  hard way when the unscoped assertion picked up changed checks from every
+  other vendor in the shared test database. A second test is the literal
+  permissions acceptance check: it inserts one row via the admin
+  (service-role) client, then attempts an `UPDATE` and a `DELETE` on it with
+  that same client and asserts both return a `permission denied` error —
+  proven by actually attempting it, not assumed from the migration's GRANT
+  statements.
 
 ### Operational notes
 
@@ -561,15 +629,13 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
 
 ### Next chunk
 
-Phase 1, Phase 2 (onboarding-only verification: bank + certificates), and Phase 3 (alerting: impact
-scorer → alert generation/dedupe → inbox UI + one-tap actions + email) are all complete. A detected
-change with a payment in flight now reaches a real person's inbox, by email and in-app, and they can
-resolve it with one click. Next is Phase 4 — evidence log + LEI:
+Phase 1, Phase 2 (onboarding-only verification: bank + certificates), Phase 3 (alerting: impact
+scorer → alert generation/dedupe → inbox UI + one-tap actions + email), and Chunk 4.1 (evidence log
+wiring) are all complete. A detected change with a payment in flight now reaches a real person's
+inbox, by email and in-app, they can resolve it with one click, and every step of that cycle — each
+check, each detected change, each alert creation/dedupe, each resolution — has a matching, physically
+tamper-proof `evidence_log` row. Next in Phase 4:
 
-- **Chunk 4.1 — Evidence log wiring** (`evidence_log`; revoke UPDATE/DELETE on it, even for the
-  service role). Append-only record of every check, change, and decision — the polymorphic
-  `entity_type`/`entity_id`, no-FK pattern that `alerts.trigger_type`/`source_check_id` already
-  followed in Chunk 3.2 is the same one CLAUDE.md described for this table before it existed.
 - **Chunk 4.2 — Clause 22 / Form 3CD export** (`GET /api/evidence/export`), built from
   `evidence_log`, not live vendor state — needs 4.1 first.
 - **Chunk 4.3 — LEI pre-payment check (GLEIF)** (`lei_checks`). This is what turns
