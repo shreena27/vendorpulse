@@ -17,9 +17,10 @@ export interface CallerContext {
   userId: string;
   role: Role | null;
   canSeePii: boolean;
+  organizationId: string | null;
 }
 
-/** The signed-in caller's role, and whether they may see DPDP fields (PAN). */
+/** The signed-in caller's role, org, and whether they may see DPDP fields (PAN). */
 export async function getCallerContext(
   supabase: Client,
 ): Promise<CallerContext | null> {
@@ -30,7 +31,7 @@ export async function getCallerContext(
 
   const { data } = await supabase
     .from("users")
-    .select("role")
+    .select("role, organization_id")
     .eq("id", user.id)
     .maybeSingle();
   const role = (data?.role ?? null) as Role | null;
@@ -38,6 +39,7 @@ export async function getCallerContext(
     userId: user.id,
     role,
     canSeePii: role === "finance_head" || role === "admin",
+    organizationId: data?.organization_id ?? null,
   };
 }
 
