@@ -24,6 +24,7 @@ import {
   type CreateOrUpdateAlertInput,
 } from "@/lib/alerts/createOrUpdateAlert";
 import { notifyAlertCreated } from "@/lib/alerts/processChangeAlerts";
+import { track } from "@/lib/analytics/track";
 
 export interface RunLeiCheckInput {
   paymentId: string;
@@ -48,6 +49,9 @@ export interface RunLeiCheckDeps {
   recordLeiCheck: (input: RecordLeiCheckInput) => Promise<{ id: string }>;
   createOrUpdateAlert: (input: CreateOrUpdateAlertInput) => Promise<AlertResult>;
   notifyAlertCreated: (alertId: string, organizationId: string) => Promise<void>;
+  /** Chunk 5.1: same "only on creation, best-effort" contract as
+   * processChangeAlerts.ts's identically-named dependency. */
+  trackAlertCreated: (alertId: string, organizationId: string) => Promise<void>;
 }
 
 export type RunLeiCheckResult =
@@ -103,6 +107,11 @@ export async function runLeiCheck(
       // Non-fatal — same "one failure never aborts" rule as every other
       // alert-email step in this pipeline.
     }
+    try {
+      await deps.trackAlertCreated(alertResult.alertId, input.organizationId);
+    } catch {
+      // Best-effort analytics — never break the LEI check pipeline (Chunk 5.1).
+    }
   }
 
   return { ok: true, leiCheckId, status: outcome.status, alertAction: alertResult.action };
@@ -140,5 +149,11 @@ export async function runLeiCheckForPayment(
     recordLeiCheck: (recordInput) => recordLeiCheck(supabase, recordInput),
     createOrUpdateAlert: (alertInput) => createOrUpdateAlert(alertsClient, alertInput),
     notifyAlertCreated: (alertId, organizationId) => notifyAlertCreated(supabase, alertId, organizationId),
+    trackAlertCreated: (alertId, organizationId) =>
+      track(supabase, {
+        organizationId,
+        eventType: "alert_created_tracked",
+        payload: { alertId, triggerType: "lei_check" },
+      }),
   });
 }

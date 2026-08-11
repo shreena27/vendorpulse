@@ -37,6 +37,7 @@ function deps(
     recordLeiCheck: vi.fn().mockResolvedValue({ id: "lei-check-1" }),
     createOrUpdateAlert: vi.fn().mockResolvedValue({ alertId: "alert-1", action: opts.alertAction ?? "created" }),
     notifyAlertCreated: vi.fn().mockResolvedValue(undefined),
+    trackAlertCreated: vi.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -108,6 +109,25 @@ describe("runLeiCheck", () => {
   it("does not let a failed notification abort the result", async () => {
     const d = deps();
     d.notifyAlertCreated = vi.fn().mockRejectedValue(new Error("resend down"));
+    const result = await runLeiCheck(input(), d);
+    expect(result.ok).toBe(true);
+  });
+
+  it("tracks a product event on a newly-created LEI alert", async () => {
+    const d = deps({ checkResult: leiResult({ status: "lapsed" }) });
+    await runLeiCheck(input(), d);
+    expect(d.trackAlertCreated).toHaveBeenCalledWith("alert-1", "org-1");
+  });
+
+  it("does not track on a dedupe update", async () => {
+    const d = deps({ alertAction: "updated" });
+    await runLeiCheck(input(), d);
+    expect(d.trackAlertCreated).not.toHaveBeenCalled();
+  });
+
+  it("does not let a failed tracking call abort the result", async () => {
+    const d = deps();
+    d.trackAlertCreated = vi.fn().mockRejectedValue(new Error("tracking down"));
     const result = await runLeiCheck(input(), d);
     expect(result.ok).toBe(true);
   });
