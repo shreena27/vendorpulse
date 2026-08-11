@@ -34,6 +34,7 @@ function deps(opts: {
     notifyAlertCreated:
       opts.notifyAlertCreated ?? vi.fn<NotifyAlertCreatedFn>().mockResolvedValue(undefined),
     logAlertEvent: vi.fn().mockResolvedValue(undefined),
+    trackAlertCreated: vi.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -184,5 +185,22 @@ describe("processChangeAlerts", () => {
     const d = deps({ alertWorthy: true });
     d.logAlertEvent = vi.fn().mockRejectedValue(new Error("evidence log down"));
     await expect(processChangeAlerts([check()], d)).rejects.toThrow(/evidence log down/);
+  });
+
+  it("tracks a product event only on a newly-created alert, never on a dedupe update", async () => {
+    const created = check({ id: "c1", vendorId: "v-created" });
+    const updated = check({ id: "c2", vendorId: "v-updated" });
+    const d = deps({ alertWorthy: true, action: ["created", "updated"] });
+
+    await processChangeAlerts([created, updated], d);
+
+    expect(d.trackAlertCreated).toHaveBeenCalledTimes(1);
+    expect(d.trackAlertCreated).toHaveBeenCalledWith("alert-1", created, "gst_change");
+  });
+
+  it("does not let a failed tracking call abort the batch or throw", async () => {
+    const d = deps({ alertWorthy: true });
+    d.trackAlertCreated = vi.fn().mockRejectedValue(new Error("tracking down"));
+    await expect(processChangeAlerts([check()], d)).resolves.toBeDefined();
   });
 });

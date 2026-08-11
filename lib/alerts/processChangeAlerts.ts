@@ -26,6 +26,7 @@ import { getAlertNudgeById } from "./queries";
 import { logEvent } from "@/lib/evidence/logEvent";
 import { sendAlertEmail } from "@/lib/email/sendAlertEmail";
 import { getResendClient } from "@/lib/email/resendClient";
+import { track } from "@/lib/analytics/track";
 
 export interface ChangedCheck {
   id: string;
@@ -63,6 +64,13 @@ export interface ProcessChangeAlertsDeps {
     triggerType: TriggerType,
     paymentImpactAmount: number,
   ) => Promise<void>;
+  /** Chunk 5.1: fires a product_events row for the Section 11 metrics
+   * pipeline. Only called on a newly-created alert — a dedupe update isn't
+   * new value delivered, same "only on creation" rule notifyAlertCreated
+   * already follows. Errors are caught here (not left to the real
+   * implementation), same defensive shape as notifyAlertCreated's own
+   * try/catch just below. */
+  trackAlertCreated: (alertId: string, check: ChangedCheck, triggerType: TriggerType) => Promise<void>;
 }
 
 const TRIGGER_TYPE_BY_CHECK_TYPE: Record<CheckType, TriggerType> = {
@@ -114,6 +122,11 @@ export async function processChangeAlerts(
         } catch {
           summary.emailsFailed++;
         }
+        try {
+          await deps.trackAlertCreated(result.alertId, check, triggerType);
+        } catch {
+          // Best-effort analytics — never break the alert pipeline (Chunk 5.1).
+        }
       } else {
         summary.alertsUpdated++;
       }
@@ -149,6 +162,13 @@ export async function processChangeAlertsForPipeline(
     getOpenPaymentAmount: (vendorId) => getOpenPaymentAmount(client, vendorId),
     createOrUpdateAlert: (input) => createOrUpdateAlert(client, input),
     notifyAlertCreated: (alertId, check) => notifyAlertCreated(supabase, alertId, check.organizationId),
+    trackAlertCreated: (alertId, check, triggerType) =>
+      track(supabase, {
+        organizationId: check.organizationId,
+        vendorId: check.vendorId,
+        eventType: "alert_created_tracked",
+        payload: { alertId, triggerType, checkId: check.id },
+      }),
     logAlertEvent: (result, check, triggerType, paymentImpactAmount) =>
       logEvent(supabase, {
         organizationId: check.organizationId,
