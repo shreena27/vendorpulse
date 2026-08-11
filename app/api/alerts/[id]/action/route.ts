@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { resolveAlert } from "@/lib/alerts/resolveAlert";
+import { logEvent } from "@/lib/evidence/logEvent";
 
 // POST /api/alerts/:id/action — one-tap resolution (ERD §4). Any org user.
 // Body: { action: "hold" | "reviewed" | "escalate" }. The system never takes
@@ -34,6 +36,18 @@ export async function POST(
   const result = await resolveAlert(supabase, id, action);
 
   if (result.ok) {
+    // evidence_log grants INSERT to service_role only (migration 0009) — the
+    // caller's own session client can't write it, so this one write uses the
+    // admin client, same reasoning the cron pipeline already relies on.
+    await logEvent(createAdminClient(), {
+      organizationId: result.alert.organization_id,
+      vendorId: result.alert.vendor_id,
+      eventType: "alert_resolved",
+      entityType: "alerts",
+      entityId: result.alert.id,
+      payload: { action, status: result.alert.status },
+      actor: user.id,
+    });
     return NextResponse.json({ alert: result.alert });
   }
 
