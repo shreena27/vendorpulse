@@ -6,6 +6,7 @@ import { runPoll } from "@/lib/verification/pollRunner";
 import { mapMsmeStatusToVendor, buildCheckEvidenceEvents } from "@/lib/verification/changeDetector";
 import { processChangeAlertsForPipeline } from "@/lib/alerts/processChangeAlerts";
 import { logEvents } from "@/lib/evidence/logEvent";
+import { trackBatch } from "@/lib/analytics/track";
 
 // Vercel Cron triggers this daily via GET with `Authorization: Bearer
 // $CRON_SECRET` (see vercel.json). POST is accepted too for manual runs. Node
@@ -33,6 +34,15 @@ async function handle(request: Request) {
     });
     const { changedChecks, allChecks, ...counts } = summary;
     await logEvents(supabase, buildCheckEvidenceEvents(allChecks));
+    await trackBatch(
+      supabase,
+      changedChecks.map((c) => ({
+        organizationId: c.organizationId,
+        vendorId: c.vendorId,
+        eventType: "status_change_detected" as const,
+        payload: { checkType: c.checkType, checkId: c.id },
+      })),
+    );
     const alerts = await processChangeAlertsForPipeline(supabase, changedChecks);
     return NextResponse.json({ ok: true, ...counts, alerts });
   } catch (err) {
