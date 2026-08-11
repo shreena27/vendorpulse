@@ -34,6 +34,17 @@ export type EvidenceEventType =
   | "alert_resolved";
 export type LeiCheckStatus = "issued" | "lapsed" | "retired" | "not_on_record";
 export type LeiProvider = "gleif";
+export type ProductEventType =
+  | "vendor_import_completed"
+  | "status_change_detected"
+  | "alert_created_tracked"
+  | "alert_actioned"
+  | "bank_cert_issue_caught"
+  | "evidence_export_completed"
+  | "audit_time_saved_reported"
+  | "pilot_to_paid_intent_signal"
+  | "pmf_survey_triggered"
+  | "pmf_survey_response";
 export type VendorSource = "tally" | "excel" | "erp_sync";
 export type ImportSource = "tally_export" | "excel" | "erp_sync";
 export type ImportStatus =
@@ -558,6 +569,49 @@ export type Database = {
             foreignKeyName: "lei_checks_payment_id_fkey";
             columns: ["payment_id"];
             referencedRelation: "payments";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      product_events: {
+        Row: {
+          id: string;
+          organization_id: string;
+          vendor_id: string | null;
+          event_type: ProductEventType;
+          payload: unknown;
+          actor: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          organization_id: string;
+          vendor_id?: string | null;
+          event_type: ProductEventType;
+          payload?: unknown;
+          actor?: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          organization_id?: string;
+          vendor_id?: string | null;
+          event_type?: ProductEventType;
+          payload?: unknown;
+          actor?: string;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "product_events_organization_id_fkey";
+            columns: ["organization_id"];
+            referencedRelation: "organizations";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "product_events_vendor_id_fkey";
+            columns: ["vendor_id"];
+            referencedRelation: "vendors";
             referencedColumns: ["id"];
           },
         ];
