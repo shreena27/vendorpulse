@@ -479,6 +479,91 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
   missing evidence row would defeat this chunk's purpose, so `logEvent`/
   `logEvents` throw on error and every caller lets that throw propagate.
 
+**Chunk 4.2 — Clause 22 / Form 3CD export: DONE.**
+- `supabase/migrations/0010_evidence_export_indexes.sql` adds
+  `evidence_log(vendor_id, event_type, created_at)` and
+  `payments(due_date)` — indexes only, no table/RLS/grant changes. Neither
+  was indexed before this chunk introduced the first range-scan query
+  against either column.
+- `lib/evidence/buildExport.ts` is the core: one row per `payments` row due
+  in `[from, to]`, each with the vendor's MSME status reconstructed
+  independently **as of that specific payment's own `due_date`** — never
+  `vendors.current_msme_status` (a live value that can't answer "what was
+  true back then"). A vendor with payments on different dates can show
+  different statuses per row. Same DI split as `lib/alerts/impactScorer.ts`
+  (`buildExportRows(range, deps)` hermetically tested with injected plain
+  functions; `buildExport(supabase, range)` wires the real
+  `SupabaseClient<Database>` fetches directly — no hand-rolled interface,
+  since this query chains 5 links deep, past the point `lib/evidence/
+  logEvent.ts`'s own comment warns risks `TS2589`).
+- **The "as of" reduction (`resolveMsmeStatusAsOf`)**: the latest
+  `evidence_log` row with `event_type = 'verification_check'` and
+  `payload->>'checkType' = 'msme_udyam'` for that vendor, `created_at` no
+  later than end-of-day (IST) of the payment's `due_date` — confirmed via
+  `.eq("payload->>checkType", "msme_udyam")` type-checking against
+  `evidence_log.payload: unknown` with no cast (postgrest-js's `.eq<ColumnName>`
+  has an explicit branch for `` `${string}->${string}` `` column paths).
+  Three distinct outcomes: `checked` (a real `statusValue`, which may itself
+  be `"UNKNOWN"`), `no_record` (has `udyam_number`, nothing checked yet as
+  of that date), `not_applicable` (no `udyam_number` — never MSME-checkable).
+- **Timezone: IST end-of-day, not UTC** — the first timezone-aware logic in
+  this codebase (everything else is plain UTC ISO). `payments.due_date` is
+  inherently an India-calendar date and this is a compliance export, so the
+  cutoff is `${due_date}T18:29:59.999Z` (= 23:59:59.999 IST, UTC+5:30, no
+  DST), not `${due_date}T23:59:59.999Z`.
+- **Confirmed, not assumed (integration test caught this):** PostgREST
+  returns `evidence_log.created_at` in Postgres's own textual form
+  (`"...+00:00"`, no trailing zero fractional seconds) rather than the
+  `"...Z"` form `buildExport.ts` itself produces for its cutoff. Plain
+  string `<=` comparison between the two forms is still correct — both use
+  the same zero-padded date/time prefix, and at the point they diverge
+  ASCII ordering (`'+' < '.' < '0'-'9' < 'Z'`) happens to match chronological
+  ordering — but it's now a documented fact, not a coincidence relied on
+  silently. See the comment on `resolveMsmeStatusAsOf`.
+- `lib/evidence/msmeStatusLabel.ts` is the pure status→label formatter
+  shared by the CSV and PDF output, same "wording never drifts across
+  surfaces" rationale as `lib/alerts/nudgeCopy.ts`. `lib/evidence/formatCsv.ts`
+  emits RFC4180 CSV with a leading UTF-8 BOM (the target user opens this in
+  Excel on Windows). `lib/evidence/formatPdf.ts` renders via `pdfkit`,
+  wrapping its `Readable`-stream `PDFDocument` in a `Promise` so the route
+  can just `await` a `Buffer`.
+- **PAN is never read** in `buildExport.ts`'s vendor fetch — same DPDP
+  exclusion CLAUDE.md already states for `evidence_log` snapshots, extended
+  here on purpose. Alert events (`alert_created`/`alert_updated`/
+  `alert_resolved`/`status_change`) are out of scope — only
+  `verification_check` events matter for Clause 22.
+- `GET /api/evidence/export?from=&to=&format=csv|pdf` (`app/api/evidence
+  /export/route.ts`) is `finance_head`/`admin` only, gated via
+  `getCallerContext` (`lib/vendors/queries.ts`) — reused, not reinvented;
+  role-gating-with-403 already had a precedent (`app/api/vendors/import
+  /route.ts`'s inline `ALLOWED_ROLES` check). This is the first route in
+  the codebase returning a non-JSON body — `Content-Disposition`/binary
+  headers designed fresh, no prior route to copy. `format` defaults to
+  `"csv"`. Buffer doesn't structurally satisfy `NextResponse`'s `BodyInit`
+  type in this TS setup (Node's `Buffer<ArrayBufferLike>` vs. the DOM lib's
+  `ArrayBufferView` expectations) — the PDF branch wraps it in
+  `new Uint8Array(pdf)`, a zero-copy view, not a cast.
+- **`next.config.ts` gained `serverExternalPackages: ["pdfkit"]`.**
+  `pdfkit` reads its bundled `.afm` font-metric files from disk at runtime
+  via `__dirname`-relative paths; Turbopack/webpack bundling for Route
+  Handlers rewrites those paths and breaks the lookup — confirmed via a
+  real `ENOENT` under `next dev` (resolving to a bogus `"C:\ROOT\..."`
+  path), not just a theoretical Vercel-only risk. `pdfkit` isn't on
+  Next.js's short list of auto-externalized packages (`@react-pdf/renderer`
+  — the alternative not chosen for this chunk — is, interestingly).
+  `serverExternalPackages` is the documented fix: it opts a dependency out
+  of Server Component/Route Handler bundling entirely, `require()`'d
+  natively instead. Fixed the Playwright PDF test locally; still worth a
+  one-time `curl` against the Vercel preview before calling PDF fully done
+  in production, since serverless packaging isn't identical to `next dev`.
+- `app/evidence/export/page.tsx` is the first page in this codebase doing a
+  `res.blob()` + `URL.createObjectURL` + synthetic `<a download>` click —
+  every prior submit handler assumed `res.json()`. Two `<input type="date">`
+  fields (`from`/`to`) — the only prior precedent was a single such field
+  in `CertificateUploadForm.tsx`. "Export evidence" nav links added to
+  `app/vendors/page.tsx` and `app/alerts/page.tsx`'s header `<Link>`
+  clusters, matching their existing pattern.
+
 **Testing.**
 - Playwright e2e lives in `e2e/`. Run `npm run test:e2e`.
 - `e2e/auth.spec.ts` covers sign-up, log out, log in, the protected-route redirect, and the wrong-password inline error.
@@ -615,6 +700,44 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
   that same client and asserts both return a `permission denied` error —
   proven by actually attempting it, not assumed from the migration's GRANT
   statements.
+- `lib/evidence/buildExport.test.ts` (Vitest, hermetic) covers Chunk 4.2's
+  pure "as of" reduction: no-udyam → `not_applicable`, empty/all-after-cutoff
+  evidence → `no_record`, the inclusive `<=` boundary at the exact cutoff,
+  `"UNKNOWN"` preserved distinct from `no_record`, picking the *last*
+  qualifying entry (not the first, not one after cutoff), and
+  `buildExportRows`'s empty-payments short-circuit (asserting the other two
+  deps are never called), multi-payment/multi-date/multi-vendor
+  independence, and `amount` returned as a `number`.
+- `lib/evidence/buildExport.integration.test.ts` is a **live-DB** integration
+  test (needs migrations 0001-0010 applied) — the chunk's core acceptance
+  test: seeds a vendor with a `REGISTERED` evidence row dated in January,
+  a payment due in January, then a *newer* `LAPSED` evidence row dated in
+  February, and asserts the January export still shows `REGISTERED` (the
+  literal "time travel" acceptance check), while a payment due in February
+  correctly resolves `LAPSED` — proving genuine per-payment reconstruction,
+  not "latest always wins." Also covers `no_record`, `not_applicable`, and
+  that calling `buildExport` with the caller's own session client (not
+  admin) scopes to that org via RLS alone, with no manual filter in
+  `buildExport.ts` itself.
+- `lib/evidence/msmeStatusLabel.test.ts`, `lib/evidence/formatCsv.test.ts`
+  (Vitest, hermetic) cover the label lookup (including the
+  unrecognized-value fallback) and CSV rendering (RFC4180 quoting/escaping,
+  null-identifier handling, the BOM, two-decimal amounts).
+  `lib/evidence/formatPdf.test.ts` is a structural smoke test only (no
+  PDF-parsing library is added): asserts a valid `%PDF-` buffer for both an
+  empty rows array and a batch covering all three `MsmeAsOfStatus` kinds,
+  without throwing.
+- `e2e/evidence-export.spec.ts` covers Chunk 4.2 end to end: a CSV download
+  is read off disk and asserted to contain the seeded vendor/GSTIN/due
+  date/amount/MSME status label; a PDF download's filename is asserted
+  (first spec in this codebase reading a downloaded file's content —
+  `page.waitForEvent("download")` + `readFileSync`); a downgraded-role
+  caller gets `403` from the API directly; an empty range still downloads a
+  valid header-only CSV. **Found via this suite, not assumed:** Next.js's
+  dev-mode toolbar renders a button labeled "Open Next.js Dev Tools," and
+  Playwright's `getByLabel` substring-matches by default — `getByLabel("To")`
+  matched both the real field and that button (`"To"` is a substring of
+  `"...Tools"`), so the date-field locators need `{ exact: true }`.
 
 ### Operational notes
 
@@ -630,14 +753,13 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
 ### Next chunk
 
 Phase 1, Phase 2 (onboarding-only verification: bank + certificates), Phase 3 (alerting: impact
-scorer → alert generation/dedupe → inbox UI + one-tap actions + email), and Chunk 4.1 (evidence log
-wiring) are all complete. A detected change with a payment in flight now reaches a real person's
-inbox, by email and in-app, they can resolve it with one click, and every step of that cycle — each
-check, each detected change, each alert creation/dedupe, each resolution — has a matching, physically
-tamper-proof `evidence_log` row. Next in Phase 4:
+scorer → alert generation/dedupe → inbox UI + one-tap actions + email), Chunk 4.1 (evidence log
+wiring), and Chunk 4.2 (Clause 22 / Form 3CD export) are all complete. A detected change with a
+payment in flight now reaches a real person's inbox, by email and in-app, they can resolve it with
+one click, every step of that cycle has a matching, physically tamper-proof `evidence_log` row, and
+a finance head can export exactly what was true on any past date for every payment due to an MSME
+vendor — never today's status. Next in Phase 4:
 
-- **Chunk 4.2 — Clause 22 / Form 3CD export** (`GET /api/evidence/export`), built from
-  `evidence_log`, not live vendor state — needs 4.1 first.
 - **Chunk 4.3 — LEI pre-payment check (GLEIF)** (`lei_checks`). This is what turns
   `lib/alerts/impactScorer.ts`'s `hasUnfavorableLeiCheck` stub (always `false` since Chunk 3.1) and
   `createOrUpdateAlert.ts`'s `lei_check` trigger type (defined in the CHECK constraint since Chunk
