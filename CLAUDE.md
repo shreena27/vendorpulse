@@ -564,6 +564,84 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
   `app/vendors/page.tsx` and `app/alerts/page.tsx`'s header `<Link>`
   clusters, matching their existing pattern.
 
+**Chunk 4.3 — LEI pre-payment check (GLEIF): DONE.**
+- **Confirmed integration point (asked before building, per the user's own
+  flag):** payments have no creation UI/API yet (Chunk 3.1 scoped them
+  service-role-write-only), so "on payment creation" can't hook into a real
+  app flow. `POST /api/payments/:id/lei-check` is a standalone,
+  callable-on-demand trigger against any existing (service-role-seeded)
+  payment — not a fabricated payment-creation flow.
+- `supabase/migrations/0011_vendors_lei_number.sql` adds `vendors.lei_number`
+  (nullable, mirrors `gstin`/`udyam_number`). `0012_lei_checks.sql` creates
+  `lei_checks` — same RLS/grant situation `verification_checks` was in
+  before Chunk 3.3-style RPCs existed elsewhere (`authenticated` SELECT-own
+  only, no RPC; the route itself does the privileged write via the admin
+  client after validating ownership through the caller's own session
+  client first — same shape `app/api/alerts/[id]/action/route.ts` already
+  uses for its evidence_log write).
+- **LEI identification is exact, never fuzzy.** GLEIF's name-search API
+  proved unreliable during planning — a "Reliance" query returned three
+  unrelated companies with different LEIs and different statuses — so the
+  check does an exact `GET /lei-records/{lei}` against `vendors.lei_number`
+  instead. A null `lei_number` resolves to `not_on_record` without ever
+  calling GLEIF — literally "no LEI on file."
+- **GLEIF's `registration.status` has 11 possible values** (its own
+  LEI-CDF spec — confirmed live, not guessed, the Chunk 1.2 lesson);
+  `lei_checks.status` only has 4. `lib/providers/lei/gleifAdapter.ts` maps
+  `ISSUED`→`issued`, `LAPSED`→`lapsed`, `RETIRED`/`MERGED`/`ANNULLED`/
+  `CANCELLED`→`retired` (no longer an operative registration), everything
+  else (`PENDING_VALIDATION`, `DUPLICATE`, `TRANSFERRED`,
+  `PENDING_TRANSFER`, `PENDING_ARCHIVAL`, a 404, or an unrecoverable
+  provider error) →`not_on_record` — never silently `issued` for an
+  ambiguous state (ERD §7). No mock adapter/selector exists for this
+  provider (unlike GST/MSME/Bank) — GLEIF needs no credentials, so there's
+  no "ship against mock" reason.
+- `lib/lei/qualifiesForLeiCheck.ts` is the one place the ₹50cr/RTGS/NEFT
+  threshold is defined (`LEI_THRESHOLD`) — both `lib/lei/runLeiCheck.ts`
+  (the gate before calling GLEIF at all) and `lib/alerts/impactScorer.ts`
+  (the qualifying-payments lookup for the secondary LEI-as-risk-signal
+  path) import it, so the number is never duplicated.
+- `lib/lei/runLeiCheck.ts` is the orchestrator: gate → check (or skip
+  straight to `not_on_record` if no LEI on file) → record the `lei_checks`
+  row (always, whatever the outcome) → `createOrUpdateAlert` with
+  `triggerType: "lei_check"` for an unfavorable result. Same DI split as
+  every other orchestrator in this codebase (`runLeiCheck(input, deps)`
+  hermetic; `runLeiCheckForPayment(supabase, input)` real wiring). This
+  only ever creates or updates an alert — it never touches the payment.
+- **The Chunk 3.1 stub is retired.** `hasUnfavorableLeiCheck` (always
+  `false`) is now `hasUnfavorableLeiCheckForVendor(supabase, vendorId)`,
+  written directly against the concrete client (no narrow interface — no
+  hermetic-testing need strong enough to justify one, same call Chunk 4.2's
+  `buildExport.ts` made; covered by `impactScorer.integration.test.ts`
+  instead). `scoreChangeForVendor` now takes `SupabaseClient<Database>`
+  directly (was `PaymentsClient`) — the one `as unknown as PaymentsClient`
+  cast it needs lives inside this function now, so callers (e.g.
+  `processChangeAlertsForPipeline`) just pass the real client straight
+  through, no pre-casting needed on their end.
+- **A real gap in already-shipped Chunk 3.3 code, found and fixed:**
+  `lib/alerts/queries.ts`'s `attachNudge()` unconditionally read
+  `verification_checks` for `source_check_id`'s status value — for a
+  `lei_check` alert, `source_check_id` points into `lei_checks` instead
+  (same polymorphic, no-FK pattern `alerts.trigger_type`/`source_check_id`
+  already used). Before this fix, any LEI alert would have silently shown
+  "status became unclear" in the inbox. `attachNudge()` now splits
+  `source_check_id`s by `trigger_type` and queries both tables.
+  `lib/alerts/nudgeCopy.ts` gained `LEI_PHRASES` (`lapsed`→"lapsed",
+  `retired`→"was retired", `not_on_record`→"has no LEI on record" —
+  distinct text, the literal "distinguishable in the UI" acceptance
+  criterion) and a third `describeStatusChange` branch.
+- `lib/alerts/processChangeAlerts.ts`'s `notifyAlertCreated` is now
+  exported and takes `organizationId: string` directly instead of a
+  `ChangedCheck` (it only ever used that one field) — reused as-is by the
+  LEI path, so "a new alert triggers an email" behaves identically for
+  every trigger type, wording included.
+- `app/api/payments/[id]/lei-check/route.ts` is `finance_head`/`admin`
+  only (`getCallerContext`, reused from `lib/vendors/queries.ts`) — the
+  ERD's "system / finance_head" auth; a future automated trigger would
+  call `runLeiCheckForPayment` directly with the service role, the same
+  way the cron routes bypass session-based routes entirely. A
+  below-threshold payment gets `400`, not a silent no-op.
+
 **Testing.**
 - Playwright e2e lives in `e2e/`. Run `npm run test:e2e`.
 - `e2e/auth.spec.ts` covers sign-up, log out, log in, the protected-route redirect, and the wrong-password inline error.
@@ -738,6 +816,51 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
   Playwright's `getByLabel` substring-matches by default — `getByLabel("To")`
   matched both the real field and that button (`"To"` is a substring of
   `"...Tools"`), so the date-field locators need `{ exact: true }`.
+- `lib/providers/lei/gleifAdapter.test.ts` (Vitest, hermetic) covers Chunk
+  4.3's status mapping: `ISSUED`→`issued`, `LAPSED`→`lapsed`, all four
+  `RETIRED`/`MERGED`/`ANNULLED`/`CANCELLED`→`retired`, all five ambiguous
+  statuses→`not_on_record` (never `issued`), a malformed LEI rejected
+  before any call, a 404→`not_on_record` with no error, retry-once on a
+  5xx, and a final fallback to `not_on_record` with an error after two
+  failed attempts.
+- `lib/lei/qualifiesForLeiCheck.test.ts` (Vitest, hermetic) covers the
+  acceptance-mandated threshold boundary (₹49.99cr/₹50.00cr/₹50.01cr) and
+  both qualifying payment methods (`rtgs`, `neft`) plus `other` never
+  qualifying however large the amount.
+- `lib/lei/runLeiCheck.test.ts` (Vitest, hermetic, DI) covers the
+  orchestrator: below-threshold and `other`-method short-circuits (neither
+  GLEIF nor the DB is touched), the no-LEI-on-file path skipping GLEIF
+  entirely, an `issued` result recording the check but creating no alert,
+  a dedupe `"updated"` result never triggering a notification, and a
+  failed notification not aborting the result (same non-fatal rule as the
+  GST/MSME email step).
+- `lib/lei/runLeiCheck.integration.test.ts` is a **live-DB + live-GLEIF**
+  integration test (needs migrations 0001-0012 applied) — the chunk's core
+  acceptance scenarios: a ₹60cr RTGS payment to a vendor with a real,
+  confirmed-lapsed LEI (`335800CO2E555Q1ZEY28`, Reliance Plastic
+  Industries) creates a `lei_checks` row and an `alerts` row with
+  `trigger_type: "lei_check"`; a ₹10cr payment creates **zero**
+  `lei_checks` rows for that payment (queried directly, not just asserted
+  on the return value) — the literal "triggers no LEI check at all"
+  wording; a vendor with no LEI on file gets `not_on_record` with
+  `lei_number: null` and still gets an alert; `not_on_record` and `lapsed`
+  produce different DB values and different `describeStatusChange` text;
+  an `other`-method payment never qualifies regardless of amount.
+- `lib/alerts/impactScorer.test.ts` and `.integration.test.ts` gained
+  cases for the real `hasUnfavorableLeiCheckForVendor` wiring: alert-worthy
+  via the LEI path with no open payment at all (both hermetically, via a
+  stub client that distinguishes the `hasOpenPendingPayment` query chain
+  from the qualifying-payments-for-LEI chain by which final method is
+  called — `.limit()` vs. `.gte()` — since both read `payments`; and for
+  real, seeding a genuine `lapsed` `lei_checks` row on a `paid`-status
+  payment so the scenario can't be mistaken for the open-payment path).
+- `e2e/lei-check.spec.ts` seeds a vendor with the same known-lapsed LEI
+  fixture plus one qualifying pending payment, calls the route directly,
+  and asserts the resulting alert card in `/alerts` shows the correct
+  `lei_check`-specific nudge text ("...'s LEI just lapsed.", "1 pending
+  payment totals ₹60.0Cr."). The full pre-existing e2e suite (including
+  `alerts.spec.ts`) was re-run alongside it to confirm the `attachNudge()`
+  polymorphic-source change introduced no regression in the GST/MSME path.
 
 ### Operational notes
 
@@ -753,25 +876,24 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
 ### Next chunk
 
 Phase 1, Phase 2 (onboarding-only verification: bank + certificates), Phase 3 (alerting: impact
-scorer → alert generation/dedupe → inbox UI + one-tap actions + email), Chunk 4.1 (evidence log
-wiring), and Chunk 4.2 (Clause 22 / Form 3CD export) are all complete. A detected change with a
-payment in flight now reaches a real person's inbox, by email and in-app, they can resolve it with
-one click, every step of that cycle has a matching, physically tamper-proof `evidence_log` row, and
-a finance head can export exactly what was true on any past date for every payment due to an MSME
-vendor — never today's status. Next in Phase 4:
+scorer → alert generation/dedupe → inbox UI + one-tap actions + email), and all of Phase 4
+(evidence log wiring, Clause 22 / Form 3CD export, LEI pre-payment check) are complete. A detected
+change with a payment in flight now reaches a real person's inbox, by email and in-app, they can
+resolve it with one click, every step of that cycle has a matching, physically tamper-proof
+`evidence_log` row, a finance head can export exactly what was true on any past date for every
+payment due to an MSME vendor, and a large RTGS/NEFT payment gets a pre-payment LEI check that
+alerts — never blocks — on a lapsed, retired, or missing LEI. `lib/alerts/impactScorer.ts`'s
+`hasUnfavorableLeiCheck` stub (always `false` since Chunk 3.1) and `createOrUpdateAlert.ts`'s
+`lei_check` trigger type (defined in the CHECK constraint since Chunk 3.2, never produced until now)
+are both real. Phase 5 is next:
 
-- **Chunk 4.3 — LEI pre-payment check (GLEIF)** (`lei_checks`). This is what turns
-  `lib/alerts/impactScorer.ts`'s `hasUnfavorableLeiCheck` stub (always `false` since Chunk 3.1) and
-  `createOrUpdateAlert.ts`'s `lei_check` trigger type (defined in the CHECK constraint since Chunk
-  3.2 but never produced) into real behavior. Verify GLEIF's live response shape first — don't guess
-  (the Chunk 1.2 lesson).
 - **Revisit `POST /api/vendors/:id/flag`** (`app/api/vendors/[id]/flag/route.ts`) once certificate
   re-verification is needed — it currently handles bank re-verification only.
 - **Live adapters still stubbed, lowest priority:** `lib/providers/bank/ekoAdapter.ts`
   (`TODO(chunk-2.1-live)`) and `lib/providers/msme/deepvueAdapter.ts` — implement once sandbox
-  credentials exist, verifying the live API first rather than guessing field names. Neither blocks
-  Phase 4.
-- **Chunk 5.x (pilot rollout + metrics)** is the phase after Phase 4 — not started.
+  credentials exist, verifying the live API first rather than guessing field names.
+- **Chunk 5.x (pilot rollout + metrics)** — not started: metrics instrumentation, provider rate
+  limiting, and the end-to-end verification suite (one Playwright file per PRD §8 user story).
 
 ### Backlog (not scheduled)
 
