@@ -36,15 +36,23 @@ const MSME_PHRASES: Record<string, string> = {
   UNKNOWN: "status became unclear",
 };
 
+const LEI_PHRASES: Record<string, string> = {
+  lapsed: "lapsed",
+  retired: "was retired",
+  not_on_record: "has no LEI on record",
+};
+
 const REGISTRATION_LABEL: Record<TriggerType, string> = {
   gst_change: "GST registration",
   msme_change: "MSME registration",
   lei_check: "LEI",
 };
 
-/** A natural verb phrase for the raw verification_checks.status_value. */
+/** A natural verb phrase for the raw status value — verification_checks.status_value
+ * for gst_change/msme_change, lei_checks.status for lei_check. */
 export function describeStatusChange(triggerType: TriggerType, statusValue: string): string {
-  const table = triggerType === "msme_change" ? MSME_PHRASES : GST_PHRASES;
+  const table =
+    triggerType === "msme_change" ? MSME_PHRASES : triggerType === "lei_check" ? LEI_PHRASES : GST_PHRASES;
   return table[statusValue] ?? `changed to ${statusValue}`;
 }
 

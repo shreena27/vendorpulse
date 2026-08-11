@@ -43,6 +43,21 @@ describe("describeStatusChange", () => {
   });
 });
 
+describe("describeStatusChange for lei_check", () => {
+  it("describes lapsed", () => {
+    expect(describeStatusChange("lei_check", "lapsed")).toBe("lapsed");
+  });
+  it("describes retired", () => {
+    expect(describeStatusChange("lei_check", "retired")).toBe("was retired");
+  });
+  it("describes not_on_record distinctly from lapsed", () => {
+    const notOnRecord = describeStatusChange("lei_check", "not_on_record");
+    const lapsed = describeStatusChange("lei_check", "lapsed");
+    expect(notOnRecord).toBe("has no LEI on record");
+    expect(notOnRecord).not.toBe(lapsed);
+  });
+});
+
 describe("buildNudgeMessage", () => {
   it("matches the PRD example for a plural payment case", () => {
     const msg = buildNudgeMessage({
