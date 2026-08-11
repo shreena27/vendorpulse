@@ -35,6 +35,7 @@ interface BankVerificationSummary {
 
 async function runBankVerifications(
   supabase: Awaited<ReturnType<typeof createClient>>,
+  organizationId: string,
   importId: string,
   bankRows: BankRow[],
 ): Promise<BankVerificationSummary> {
@@ -68,9 +69,18 @@ async function runBankVerifications(
           accountNumber: row.accountNumber,
           ifsc: row.ifsc,
         });
-        if (result.status === "verified") summary.verified++;
-        else if (result.status === "manual_review") summary.manualReview++;
-        else summary.mismatch++;
+        if (result.status === "verified") {
+          summary.verified++;
+        } else {
+          if (result.status === "manual_review") summary.manualReview++;
+          else summary.mismatch++;
+          await track(createAdminClient(), {
+            organizationId,
+            vendorId: row.vendorId,
+            eventType: "bank_cert_issue_caught",
+            payload: { kind: "bank", status: result.status },
+          });
+        }
       } catch {
         // One vendor's bank check failing never aborts the batch or the
         // import response — same resilience rule as the GST/MSME poller.
@@ -238,7 +248,7 @@ export async function POST(request: Request) {
   // problem is reported in the summary, never as an import failure.
   const bankVerifications =
     bankRows.length > 0
-      ? await runBankVerifications(supabase, importId, bankRows)
+      ? await runBankVerifications(supabase, profile.organization_id, importId, bankRows)
       : undefined;
 
   await track(createAdminClient(), {

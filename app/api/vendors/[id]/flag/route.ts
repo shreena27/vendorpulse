@@ -3,6 +3,8 @@ import { createClient } from "@/lib/supabase/server";
 import { ACCOUNT_NUMBER_REGEX, IFSC_REGEX } from "@/lib/import/validateVendorRow";
 import { getBankAdapter } from "@/lib/providers/bank";
 import { verifyVendorBank } from "@/lib/bank/verifyVendorBank";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { track } from "@/lib/analytics/track";
 
 // POST /api/vendors/:id/flag — manual flag, any org user (ERD §4). Chunk 2.1
 // wires the bank-verification side only; certificate re-verification (2.2)
@@ -49,7 +51,7 @@ export async function POST(
   // RLS-scoped: a vendor in another org reads as not found, same as GET /api/vendors/:id.
   const { data: vendor } = await supabase
     .from("vendors")
-    .select("id, name")
+    .select("id, name, organization_id")
     .eq("id", id)
     .maybeSingle();
   if (!vendor) {
@@ -64,6 +66,14 @@ export async function POST(
       ifsc,
       reason,
     });
+    if (summary.status !== "verified") {
+      await track(createAdminClient(), {
+        organizationId: vendor.organization_id,
+        vendorId: vendor.id,
+        eventType: "bank_cert_issue_caught",
+        payload: { kind: "bank", status: summary.status },
+      });
+    }
     return NextResponse.json(summary);
   } catch (err) {
     return NextResponse.json(
