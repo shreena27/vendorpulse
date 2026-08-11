@@ -11,6 +11,8 @@ import type { VendorImportInput } from "@/lib/supabase/types";
 import { correlateImportedVendors } from "@/lib/vendors/correlateImport";
 import { getBankAdapter } from "@/lib/providers/bank";
 import { verifyVendorBank } from "@/lib/bank/verifyVendorBank";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { track } from "@/lib/analytics/track";
 
 // Bounded concurrency for the post-import bank-verification loop, same shape
 // as the poller's worker pool (lib/verification/pollRunner.ts) — kept inline
@@ -103,7 +105,7 @@ export async function POST(request: Request) {
   // Role gate. The list of members is RLS-scoped; select this caller's own row.
   const { data: profile } = await supabase
     .from("users")
-    .select("role")
+    .select("role, organization_id")
     .eq("id", user.id)
     .single();
   if (!profile || !ALLOWED_ROLES.has(profile.role)) {
@@ -238,6 +240,19 @@ export async function POST(request: Request) {
     bankRows.length > 0
       ? await runBankVerifications(supabase, importId, bankRows)
       : undefined;
+
+  await track(createAdminClient(), {
+    organizationId: profile.organization_id,
+    eventType: "vendor_import_completed",
+    payload: {
+      source: "excel",
+      importId,
+      rowCount: parsed.rows.length,
+      insertedCount: validVendors.length,
+      errorCount: errors.length,
+    },
+    actor: user.id,
+  });
 
   return NextResponse.json({
     importId,
