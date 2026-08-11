@@ -3,8 +3,9 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { getGstAdapter } from "@/lib/providers/gst";
 import { isAuthorizedCron } from "@/lib/verification/cronAuth";
 import { runPoll } from "@/lib/verification/pollRunner";
-import { mapGstStatusToVendor } from "@/lib/verification/changeDetector";
+import { mapGstStatusToVendor, buildCheckEvidenceEvents } from "@/lib/verification/changeDetector";
 import { processChangeAlertsForPipeline } from "@/lib/alerts/processChangeAlerts";
+import { logEvents } from "@/lib/evidence/logEvent";
 
 // Vercel Cron triggers this daily via GET with `Authorization: Bearer
 // $CRON_SECRET` (see vercel.json). POST is accepted too for manual runs. Node
@@ -29,7 +30,8 @@ async function handle(request: Request) {
       runCheck: (gstin) => adapter.checkGstin(gstin),
       mapStatus: mapGstStatusToVendor,
     });
-    const { changedChecks, ...counts } = summary;
+    const { changedChecks, allChecks, ...counts } = summary;
+    await logEvents(supabase, buildCheckEvidenceEvents(allChecks));
     const alerts = await processChangeAlertsForPipeline(supabase, changedChecks);
     return NextResponse.json({ ok: true, ...counts, alerts });
   } catch (err) {

@@ -3,8 +3,9 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { getMsmeAdapter } from "@/lib/providers/msme";
 import { isAuthorizedCron } from "@/lib/verification/cronAuth";
 import { runPoll } from "@/lib/verification/pollRunner";
-import { mapMsmeStatusToVendor } from "@/lib/verification/changeDetector";
+import { mapMsmeStatusToVendor, buildCheckEvidenceEvents } from "@/lib/verification/changeDetector";
 import { processChangeAlertsForPipeline } from "@/lib/alerts/processChangeAlerts";
+import { logEvents } from "@/lib/evidence/logEvent";
 
 // Vercel Cron triggers this daily via GET with `Authorization: Bearer
 // $CRON_SECRET` (see vercel.json). POST is accepted too for manual runs. Node
@@ -30,7 +31,8 @@ async function handle(request: Request) {
       runCheck: (udyam) => adapter.checkUdyam(udyam),
       mapStatus: mapMsmeStatusToVendor,
     });
-    const { changedChecks, ...counts } = summary;
+    const { changedChecks, allChecks, ...counts } = summary;
+    await logEvents(supabase, buildCheckEvidenceEvents(allChecks));
     const alerts = await processChangeAlertsForPipeline(supabase, changedChecks);
     return NextResponse.json({ ok: true, ...counts, alerts });
   } catch (err) {
