@@ -585,6 +585,17 @@ resolve it with one click. Next is Phase 4 — evidence log + LEI:
   Phase 4.
 - **Chunk 5.x (pilot rollout + metrics)** is the phase after Phase 4 — not started.
 
+### Backlog (not scheduled)
+
+Ideas noted for later, deliberately not part of the phase build order above. Revisit only if asked.
+
+- **Notify other org members when an alert is resolved.** Chunk 3.3's `notifyAlertCreated` only
+  fires on alert *creation* (`lib/alerts/processChangeAlerts.ts`) — nothing emails when someone
+  clicks hold/reviewed/escalate (`app/api/alerts/[id]/action/route.ts`). For a single-finance-head
+  pilot this doesn't matter; it would if a second `finance_head`/`admin` in the same org wants to
+  know a colleague already acted. Out of scope for the pilot — noted so it isn't rediscovered as a
+  surprise gap later.
+
 <!-- BEGIN:nextjs-agent-rules -->
 
 # This is NOT the Next.js you know
