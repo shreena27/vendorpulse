@@ -33,7 +33,6 @@ const hasEnv = Boolean(SUPABASE_URL && ANON && SERVICE);
 describe.skipIf(!hasEnv)("buildExport (integration)", () => {
   let admin: SupabaseClient<Database>;
   let user: SupabaseClient<Database>;
-  let userId: string;
   let orgId: string;
 
   async function signUp(tag: string) {
@@ -96,7 +95,6 @@ describe.skipIf(!hasEnv)("buildExport (integration)", () => {
 
     const a = await signUp("a");
     user = a.client;
-    userId = a.userId;
     userIds.push(a.userId);
     orgId = await orgIdFor(a.userId);
     orgIds.push(orgId);

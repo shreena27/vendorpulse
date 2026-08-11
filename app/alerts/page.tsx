@@ -24,12 +24,20 @@ export default async function AlertsPage() {
         <span className="text-lg font-semibold tracking-tight text-black dark:text-zinc-50">
           VendorPulse
         </span>
-        <Link
-          href="/vendors"
-          className="text-sm text-zinc-600 underline-offset-4 hover:underline dark:text-zinc-400"
-        >
-          ← Vendors
-        </Link>
+        <div className="flex items-center gap-3">
+          <Link
+            href="/evidence/export"
+            className="text-sm font-medium text-zinc-600 underline-offset-4 hover:underline dark:text-zinc-400"
+          >
+            Export evidence
+          </Link>
+          <Link
+            href="/vendors"
+            className="text-sm text-zinc-600 underline-offset-4 hover:underline dark:text-zinc-400"
+          >
+            ← Vendors
+          </Link>
+        </div>
       </header>
 
       <main className="flex flex-1 flex-col gap-6 p-6">
