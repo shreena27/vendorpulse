@@ -26,6 +26,12 @@ export type PaymentStatus = "pending" | "paid" | "cancelled";
 export type PaymentMethod = "rtgs" | "neft" | "other";
 export type AlertTriggerType = "gst_change" | "msme_change" | "lei_check";
 export type AlertStatus = "open" | "hold" | "reviewed" | "cleared" | "escalated";
+export type EvidenceEventType =
+  | "verification_check"
+  | "status_change"
+  | "alert_created"
+  | "alert_updated"
+  | "alert_resolved";
 export type VendorSource = "tally" | "excel" | "erp_sync";
 export type ImportSource = "tally_export" | "excel" | "erp_sync";
 export type ImportStatus =
@@ -443,6 +449,55 @@ export type Database = {
             foreignKeyName: "alerts_resolved_by_fkey";
             columns: ["resolved_by"];
             referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      evidence_log: {
+        Row: {
+          id: string;
+          organization_id: string;
+          vendor_id: string;
+          event_type: EvidenceEventType;
+          entity_type: string;
+          entity_id: string;
+          payload: unknown;
+          actor: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          organization_id: string;
+          vendor_id: string;
+          event_type: EvidenceEventType;
+          entity_type: string;
+          entity_id: string;
+          payload?: unknown;
+          actor?: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          organization_id?: string;
+          vendor_id?: string;
+          event_type?: EvidenceEventType;
+          entity_type?: string;
+          entity_id?: string;
+          payload?: unknown;
+          actor?: string;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "evidence_log_organization_id_fkey";
+            columns: ["organization_id"];
+            referencedRelation: "organizations";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "evidence_log_vendor_id_fkey";
+            columns: ["vendor_id"];
+            referencedRelation: "vendors";
             referencedColumns: ["id"];
           },
         ];
