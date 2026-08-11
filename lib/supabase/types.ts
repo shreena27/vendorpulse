@@ -485,6 +485,24 @@ export type Database = {
         };
         Returns: string;
       };
+      resolve_alert: {
+        Args: {
+          p_alert_id: string;
+          p_action: string;
+        };
+        Returns: {
+          id: string;
+          organization_id: string;
+          vendor_id: string;
+          trigger_type: AlertTriggerType;
+          source_check_id: string;
+          payment_impact_amount: string;
+          status: AlertStatus;
+          resolved_by: string | null;
+          resolved_at: string | null;
+          created_at: string;
+        };
+      };
     };
     Enums: Record<never, never>;
     CompositeTypes: Record<never, never>;

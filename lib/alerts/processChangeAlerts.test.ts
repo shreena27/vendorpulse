@@ -11,22 +11,28 @@ function check(overrides: Partial<ChangedCheck> = {}): ChangedCheck {
   };
 }
 
+type NotifyAlertCreatedFn = (alertId: string, check: ChangedCheck) => Promise<void>;
+
 function deps(opts: {
   alertWorthy: boolean | boolean[];
   amount?: number;
-  action?: "created" | "updated";
+  action?: "created" | "updated" | ("created" | "updated")[];
+  notifyAlertCreated?: ReturnType<typeof vi.fn<NotifyAlertCreatedFn>>;
 }) {
   const worthySequence = Array.isArray(opts.alertWorthy) ? [...opts.alertWorthy] : null;
+  const actionSequence = Array.isArray(opts.action) ? [...opts.action] : null;
   return {
     scoreChangeForVendor: vi.fn().mockImplementation(async () => ({
       alertWorthy: worthySequence ? worthySequence.shift()! : opts.alertWorthy,
       reason: "open_payment" as const,
     })),
     getOpenPaymentAmount: vi.fn().mockResolvedValue(opts.amount ?? 1000),
-    createOrUpdateAlert: vi.fn().mockResolvedValue({
+    createOrUpdateAlert: vi.fn().mockImplementation(async () => ({
       alertId: "alert-1",
-      action: opts.action ?? "created",
-    }),
+      action: actionSequence ? actionSequence.shift()! : (opts.action ?? "created"),
+    })),
+    notifyAlertCreated:
+      opts.notifyAlertCreated ?? vi.fn<NotifyAlertCreatedFn>().mockResolvedValue(undefined),
   };
 }
 
@@ -44,6 +50,8 @@ describe("processChangeAlerts", () => {
       alertsCreated: 1,
       alertsUpdated: 0,
       notAlertWorthy: 1,
+      emailsSent: 1,
+      emailsFailed: 0,
     });
   });
 
@@ -84,13 +92,60 @@ describe("processChangeAlerts", () => {
   it("counts created vs updated separately based on createOrUpdateAlert's result", async () => {
     const d = deps({ alertWorthy: true, action: "updated" });
     const summary = await processChangeAlerts([check()], d);
-    expect(summary).toEqual({ scored: 1, alertsCreated: 0, alertsUpdated: 1, notAlertWorthy: 0 });
+    expect(summary).toEqual({
+      scored: 1,
+      alertsCreated: 0,
+      alertsUpdated: 1,
+      notAlertWorthy: 0,
+      emailsSent: 0,
+      emailsFailed: 0,
+    });
+    expect(d.notifyAlertCreated).not.toHaveBeenCalled();
   });
 
   it("returns all zeros for an empty batch, without calling any dependency", async () => {
     const d = deps({ alertWorthy: true });
     const summary = await processChangeAlerts([], d);
-    expect(summary).toEqual({ scored: 0, alertsCreated: 0, alertsUpdated: 0, notAlertWorthy: 0 });
+    expect(summary).toEqual({
+      scored: 0,
+      alertsCreated: 0,
+      alertsUpdated: 0,
+      notAlertWorthy: 0,
+      emailsSent: 0,
+      emailsFailed: 0,
+    });
     expect(d.scoreChangeForVendor).not.toHaveBeenCalled();
+  });
+
+  it("notifies only on a newly-created alert, never on a dedupe update", async () => {
+    const created = check({ id: "c1", vendorId: "v-created" });
+    const updated = check({ id: "c2", vendorId: "v-updated" });
+    const d = deps({ alertWorthy: true, action: ["created", "updated"] });
+
+    await processChangeAlerts([created, updated], d);
+
+    expect(d.notifyAlertCreated).toHaveBeenCalledTimes(1);
+    expect(d.notifyAlertCreated).toHaveBeenCalledWith("alert-1", created);
+  });
+
+  it("counts a failed notification without throwing or aborting the rest of the batch", async () => {
+    const failing = check({ id: "c1", vendorId: "v1" });
+    const fine = check({ id: "c2", vendorId: "v2" });
+    const notifyAlertCreated = vi
+      .fn<NotifyAlertCreatedFn>()
+      .mockRejectedValueOnce(new Error("resend down"))
+      .mockResolvedValueOnce(undefined);
+    const d = deps({ alertWorthy: true, notifyAlertCreated });
+
+    const summary = await processChangeAlerts([failing, fine], d);
+
+    expect(summary).toEqual({
+      scored: 2,
+      alertsCreated: 2,
+      alertsUpdated: 0,
+      notAlertWorthy: 0,
+      emailsSent: 1,
+      emailsFailed: 1,
+    });
   });
 });

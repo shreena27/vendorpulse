@@ -23,12 +23,20 @@ export default async function VendorsPage() {
         <span className="text-lg font-semibold tracking-tight text-black dark:text-zinc-50">
           VendorPulse
         </span>
-        <Link
-          href="/vendors/import"
-          className="rounded-full border border-black/[.12] px-4 py-1.5 text-sm font-medium transition-colors hover:bg-black/[.04] dark:border-white/[.16] dark:hover:bg-white/[.06]"
-        >
-          Import vendors
-        </Link>
+        <div className="flex items-center gap-3">
+          <Link
+            href="/alerts"
+            className="text-sm font-medium text-zinc-600 underline-offset-4 hover:underline dark:text-zinc-400"
+          >
+            Alerts
+          </Link>
+          <Link
+            href="/vendors/import"
+            className="rounded-full border border-black/[.12] px-4 py-1.5 text-sm font-medium transition-colors hover:bg-black/[.04] dark:border-white/[.16] dark:hover:bg-white/[.06]"
+          >
+            Import vendors
+          </Link>
+        </div>
       </header>
 
       <main className="flex flex-1 flex-col gap-6 p-6">

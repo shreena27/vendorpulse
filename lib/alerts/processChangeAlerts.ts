@@ -22,6 +22,9 @@ import {
   type CreateOrUpdateAlertInput,
   type TriggerType,
 } from "./createOrUpdateAlert";
+import { getAlertNudgeById } from "./queries";
+import { sendAlertEmail } from "@/lib/email/sendAlertEmail";
+import { getResendClient } from "@/lib/email/resendClient";
 
 export interface ChangedCheck {
   id: string;
@@ -35,12 +38,19 @@ export interface ProcessChangeAlertsSummary {
   alertsCreated: number;
   alertsUpdated: number;
   notAlertWorthy: number;
+  emailsSent: number;
+  emailsFailed: number;
 }
 
 export interface ProcessChangeAlertsDeps {
   scoreChangeForVendor: (input: { vendorId: string; isChange: boolean }) => Promise<ScoreResult>;
   getOpenPaymentAmount: (vendorId: string) => Promise<number>;
   createOrUpdateAlert: (input: CreateOrUpdateAlertInput) => Promise<AlertResult>;
+  /** Called only for a newly-created alert, never a dedupe update — "a new
+   * alert triggers an email," not a repeat detection. A rejection here is
+   * caught and counted, never thrown (one failure never aborts the batch,
+   * same rule as pollRunner/bank verification). */
+  notifyAlertCreated: (alertId: string, check: ChangedCheck) => Promise<void>;
 }
 
 const TRIGGER_TYPE_BY_CHECK_TYPE: Record<CheckType, TriggerType> = {
@@ -59,6 +69,8 @@ export async function processChangeAlerts(
     alertsCreated: 0,
     alertsUpdated: 0,
     notAlertWorthy: 0,
+    emailsSent: 0,
+    emailsFailed: 0,
   };
 
   let cursor = 0;
@@ -80,8 +92,17 @@ export async function processChangeAlerts(
         sourceCheckId: check.id,
         paymentImpactAmount,
       });
-      if (result.action === "created") summary.alertsCreated++;
-      else summary.alertsUpdated++;
+      if (result.action === "created") {
+        summary.alertsCreated++;
+        try {
+          await deps.notifyAlertCreated(result.alertId, check);
+          summary.emailsSent++;
+        } catch {
+          summary.emailsFailed++;
+        }
+      } else {
+        summary.alertsUpdated++;
+      }
     }
   }
   await Promise.all(
@@ -113,5 +134,43 @@ export async function processChangeAlertsForPipeline(
     scoreChangeForVendor: (input) => scoreChangeForVendor(client, input),
     getOpenPaymentAmount: (vendorId) => getOpenPaymentAmount(client, vendorId),
     createOrUpdateAlert: (input) => createOrUpdateAlert(client, input),
+    notifyAlertCreated: (alertId, check) => notifyAlertCreated(supabase, alertId, check),
+  });
+}
+
+/** Real notifyAlertCreated: builds the nudge, finds the org's finance_head/
+ * admin recipients, and sends via Resend. Thrown errors are caught by
+ * processChangeAlerts's caller, not here — this function is allowed to
+ * throw; non-fatal handling is the loop's job. */
+async function notifyAlertCreated(
+  supabase: SupabaseClient<Database>,
+  alertId: string,
+  check: ChangedCheck,
+): Promise<void> {
+  const alert = await getAlertNudgeById(supabase, alertId);
+  if (!alert) {
+    throw new Error(`alert ${alertId} not found for notification`);
+  }
+
+  const { data: recipients, error } = await supabase
+    .from("users")
+    .select("email")
+    .eq("organization_id", check.organizationId)
+    .in("role", ["finance_head", "admin"]);
+  if (error) {
+    throw new Error(`load alert recipients failed: ${error.message}`);
+  }
+
+  const to = (recipients ?? [])
+    .map((r) => r.email)
+    .filter((email): email is string => Boolean(email));
+  if (to.length === 0) return; // Nobody to notify; not an error.
+
+  await sendAlertEmail(getResendClient(), {
+    to,
+    vendorName: alert.vendorName,
+    changeLine: alert.nudge.changeLine,
+    impactLine: alert.nudge.impactLine,
+    question: alert.nudge.question,
   });
 }

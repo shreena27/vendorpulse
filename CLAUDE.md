@@ -395,6 +395,53 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
   (`supabase as unknown as PaymentsClient & AlertsClient`) inside the one function that bridges real
   code to the narrow interface (`processChangeAlertsForPipeline`), never at every call site.
 
+**Chunk 3.3 — Alert inbox UI + one-tap actions + email: DONE.**
+- `supabase/migrations/0008_resolve_alert.sql` adds one RPC, no new table: `resolve_alert(
+  p_alert_id, p_action)`. This is the first `authenticated`-write capability on `alerts`, and — same
+  as every prior user-triggered write (`import_vendors`, `record_bank_verification`,
+  `create_certificate`) — it's a SECURITY DEFINER RPC, not a direct `UPDATE` RLS policy, because the
+  409-on-already-resolved requirement needs one atomic `update ... where resolved_at is null
+  returning *`; a select-then-update from application code would race. `action` → `status`:
+  `hold→hold`, `reviewed→reviewed`, `escalate→escalated` (verb vs. noun, mapped literally). "Already
+  resolved" for the 409 check is `resolved_at is not null` — independent of Chunk 3.2's dedupe
+  "open" check (`status in (open,hold,reviewed)`), which still governs whether a *new poll-detected
+  change* updates vs. creates a row; that logic is untouched.
+- **Nudge copy is one pure module, `lib/alerts/nudgeCopy.ts`, shared by the UI and the email** — the
+  PRD §4.5 pattern exactly: `"Vendor X's GST registration just went inactive."` /
+  `"2 pending payments total ₹4.1L."` / `"Hold them?"`. Payment count/amount are computed **live**
+  from `payments` at read time (`lib/alerts/queries.ts`), not read off `alerts.payment_impact_amount`
+  (a stale snapshot from creation/dedupe time) — a finance head deciding *right now* should see the
+  current picture. `formatIndianCurrency` does L/Cr notation; `describeStatusChange` is a small
+  per-`(trigger_type, status_value)` phrase lookup.
+- **The wording constraint is a test, not just a comment.** `nudgeCopy.test.ts` asserts every
+  generated question ends in `?` and that no generated text (or the email body) contains
+  system-agency phrases ("automatically", "has been held", "system held"). The UI's post-resolution
+  text attributes the decision to a specific person — `lib/alerts/queries.ts` batch-fetches the
+  resolver's `full_name`/`email` so the inbox can say "Priya held these payments," not a vague "you"
+  that might misattribute a teammate's click.
+- `lib/email/sendAlertEmail.ts` (new `resend` dependency) reuses the exact same three nudge lines —
+  UI and email can never say different things. `lib/alerts/processChangeAlerts.ts` (Chunk 3.2) gained
+  one capability: `notifyAlertCreated`, called **only** on `action: "created"`, never a dedupe
+  `"updated"` — "a new alert triggers an email" only means something inside that one function, the
+  same polling cycle the ERD's acceptance criteria refers to. A failed send is caught and counted
+  (`emailsFailed`), never thrown — same "one failure never aborts the batch" rule as everywhere else
+  in this pipeline; confirmed against the real Resend sandbox in
+  `processChangeAlerts.integration.test.ts`, which asserts `emailsFailed: 1` because the test's
+  throwaway signup email isn't the developer's verified sandbox address.
+- `app/api/alerts/route.ts` (`GET`, optional `?status=&vendorId=&triggerType=`) and
+  `app/api/alerts/[id]/action/route.ts` (`POST`, body `{ action }`) are thin HTTP-status mappers over
+  `lib/alerts/queries.ts` / `lib/alerts/resolveAlert.ts` — same route/lib split as every other write
+  path (`verifyVendorBank.ts`, `uploadCertificate.ts`).
+- `app/alerts/page.tsx` + `AlertInbox.tsx`: filter chips default to **"All"**, not "Needs action" —
+  found via the e2e test failing first: with "Needs action" as the default, a just-resolved card
+  vanishes from view the instant its `resolvedAt` is set, since it no longer matches that filter,
+  so the person who just clicked "Hold" never sees the confirmation. Matches `VendorList.tsx`'s own
+  default ("all") anyway. One "Alerts" nav link added to `app/vendors/page.tsx`'s header.
+- **No secret needed beyond `RESEND_API_KEY`** (`.env.local`, mirror into Vercel before this runs in
+  production). Resend's sandbox sender (`onboarding@resend.dev`) only actually delivers to the
+  account's verified signup address until a custom domain is verified — expected, not a bug; the
+  `processChangeAlerts.integration.test.ts` failure mode above is a direct consequence of this.
+
 **Testing.**
 - Playwright e2e lives in `e2e/`. Run `npm run test:e2e`.
 - `e2e/auth.spec.ts` covers sign-up, log out, log in, the protected-route redirect, and the wrong-password inline error.
@@ -483,13 +530,29 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
   `trigger_type`/`source_check_id`/`payment_impact_amount`; triggers a second real change on the
   same vendor and a second payment, and asserts the *same* alert row is updated (new summed amount,
   `source_check_id` unchanged) rather than a duplicate appearing; and asserts a changed vendor with
-  no payment produces zero alert rows.
+  no payment produces zero alert rows. Since Chunk 3.3 it also exercises the real Resend send and
+  asserts `emailsFailed: 1` (expected — see the Chunk 3.3 sandbox note above).
+- `lib/alerts/nudgeCopy.test.ts` (Vitest, hermetic) covers Chunk 3.3's pure copy generation:
+  currency boundaries (plain / L / Cr), singular vs. plural payment phrasing, the zero-payment edge
+  case, per-status phrase lookups, and the wording-constraint assertions (question always ends `?`,
+  never a system-agency phrase). `sendAlertEmail.test.ts` (stub Resend client) asserts the
+  vendor/amount/recipient payload — the literal "mocked in CI" requirement.
+- `lib/alerts/resolveAlert.integration.test.ts` is a **live-DB** integration test (needs migration
+  0008 applied): the first action on a seeded alert succeeds and sets
+  `status`/`resolved_by`/`resolved_at`; a second action on the same alert returns
+  `already_resolved` and the DB row's resolution fields are byte-for-byte unchanged from the first
+  call — the literal acceptance case. Also covers a different org's alert (RLS-scoped `not_found`)
+  and an unknown alert id.
+- `e2e/alerts.spec.ts` seeds a vendor + a GST check + two pending payments (₹2.5L + ₹1.6L = the
+  PRD's own ₹4.1L example) + the alert row directly, visits `/alerts`, asserts the exact three-line
+  nudge copy renders, clicks "Hold," and asserts the card updates in place — no reload — to
+  "You held these payments," with all three action buttons gone.
 
 ### Operational notes
 
 - **Migrations run by hand.** Apply each `supabase/migrations/*.sql` in the Supabase SQL Editor (or `supabase db push`). The Vercel deploy does NOT run migrations. There is no CI migration step yet.
 - **Every new table needs GRANTs.** PostgREST checks SQL grants BEFORE RLS. A table with policies but no grant returns `permission denied` (42501). Grant `select`/`insert`/`update`/`delete` to `authenticated` as the policy needs, and `all` to `service_role`. See section 6 of `0001_core.sql`.
-- **Secrets.** `.env.local` (gitignored) holds `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `SANDBOX_API_KEY`/`SANDBOX_API_SECRET` (GST provider), and `CRON_SECRET` (cron auth). Never use the service-role key in client code. The service-role/Sandbox/cron secrets are all server-only (no `NEXT_PUBLIC_` prefix). Mirror `SANDBOX_*` and `CRON_SECRET` into Vercel before the cron runs in production.
+- **Secrets.** `.env.local` (gitignored) holds `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `SANDBOX_API_KEY`/`SANDBOX_API_SECRET` (GST provider), `CRON_SECRET` (cron auth), and `RESEND_API_KEY` (alert emails, Chunk 3.3). Never use the service-role key in client code. All of these are server-only (no `NEXT_PUBLIC_` prefix). Mirror `SANDBOX_*`, `CRON_SECRET`, and `RESEND_API_KEY` into Vercel before the cron runs in production. Raw secret values go directly into `.env.local`, never through chat/commit history — every secret in this project has been handled that way.
 - **Middleware guards pages, not APIs.** `lib/supabase/middleware.ts` redirects signed-out users to
   `/login`, but **exempts `/api/*`** — API routes enforce their own auth and return JSON status codes
   (401/404), never an HTML redirect. Without this exemption the cron routes 307-redirect to `/login`
@@ -498,22 +561,29 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
 
 ### Next chunk
 
-Phase 1 and Phase 2 (onboarding-only verification: bank + certificates) are both complete. Phase 3
-(alerting) is underway — Chunks 3.1 (impact scorer) and 3.2 (alert generation + dedupe) are both
-done: `poll-gst`/`poll-msme` now score every detected change and write/dedupe `alerts` rows for real.
-Next:
+Phase 1, Phase 2 (onboarding-only verification: bank + certificates), and Phase 3 (alerting: impact
+scorer → alert generation/dedupe → inbox UI + one-tap actions + email) are all complete. A detected
+change with a payment in flight now reaches a real person's inbox, by email and in-app, and they can
+resolve it with one click. Next is Phase 4 — evidence log + LEI:
 
-- **Chunk 3.3 — Alert UI + one-tap actions + Resend email.** First user-facing surface for
-  `alerts` — everything through 3.2 has been cron-pipeline-internal. Needs `GET /api/alerts` and
-  `POST /api/alerts/:id/action` (`{ action: hold | reviewed | escalate }`, 409 if already resolved
-  per the ERD) plus a list/detail UI, likely following the `app/vendors` + `lib/vendors/queries.ts`
-  shared-query-helper pattern.
+- **Chunk 4.1 — Evidence log wiring** (`evidence_log`; revoke UPDATE/DELETE on it, even for the
+  service role). Append-only record of every check, change, and decision — the polymorphic
+  `entity_type`/`entity_id`, no-FK pattern that `alerts.trigger_type`/`source_check_id` already
+  followed in Chunk 3.2 is the same one CLAUDE.md described for this table before it existed.
+- **Chunk 4.2 — Clause 22 / Form 3CD export** (`GET /api/evidence/export`), built from
+  `evidence_log`, not live vendor state — needs 4.1 first.
+- **Chunk 4.3 — LEI pre-payment check (GLEIF)** (`lei_checks`). This is what turns
+  `lib/alerts/impactScorer.ts`'s `hasUnfavorableLeiCheck` stub (always `false` since Chunk 3.1) and
+  `createOrUpdateAlert.ts`'s `lei_check` trigger type (defined in the CHECK constraint since Chunk
+  3.2 but never produced) into real behavior. Verify GLEIF's live response shape first — don't guess
+  (the Chunk 1.2 lesson).
 - **Revisit `POST /api/vendors/:id/flag`** (`app/api/vendors/[id]/flag/route.ts`) once certificate
   re-verification is needed — it currently handles bank re-verification only.
 - **Live adapters still stubbed, lowest priority:** `lib/providers/bank/ekoAdapter.ts`
   (`TODO(chunk-2.1-live)`) and `lib/providers/msme/deepvueAdapter.ts` — implement once sandbox
-  credentials exist, verifying the live API first rather than guessing field names (the Chunk 1.2
-  lesson). Neither blocks Phase 3.
+  credentials exist, verifying the live API first rather than guessing field names. Neither blocks
+  Phase 4.
+- **Chunk 5.x (pilot rollout + metrics)** is the phase after Phase 4 — not started.
 
 <!-- BEGIN:nextjs-agent-rules -->
 

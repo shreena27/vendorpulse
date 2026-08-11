@@ -32,9 +32,15 @@ const hasEnv = Boolean(SUPABASE_URL && ANON && SERVICE);
  * that same row (dedupe: no duplicate, source_check_id untouched, amount
  * refreshed); a changed vendor with no payment gets no alert at all.
  *
+ * Since Chunk 3.3, `processChangeAlertsForPipeline` also attempts a real
+ * Resend send on every newly-created alert. This test's throwaway signup
+ * email isn't the developer's verified sandbox address, so that send always
+ * fails here — expected, and asserted as `emailsFailed: 1`, not a thrown
+ * error (the pipeline's "one failure never aborts the batch" rule).
+ *
  * Prerequisite: migrations 0003, 0006, 0007 applied, Supabase "Confirm
  * email" off. Uses the msme_udyam path with a stub adapter, so no external
- * API is called.
+ * API is called except the (expected-to-fail) Resend send.
  */
 describe.skipIf(!hasEnv)("processChangeAlerts (integration)", () => {
   let admin: SupabaseClient<Database>;
@@ -151,11 +157,30 @@ describe.skipIf(!hasEnv)("processChangeAlerts (integration)", () => {
     });
     expect(pErr, pErr?.message).toBeNull();
 
+    // The email attempt fails here (Resend's sandbox only delivers to the
+    // developer's own verified address, not this test's throwaway signup
+    // email) — that's expected and non-fatal: emailsFailed, not a thrown
+    // error, same "one failure never aborts the batch" rule as everywhere
+    // else in this pipeline.
     const summaryA1 = await processChangeAlertsForPipeline(admin, [checkA1!]);
-    expect(summaryA1).toEqual({ scored: 1, alertsCreated: 1, alertsUpdated: 0, notAlertWorthy: 0 });
+    expect(summaryA1).toEqual({
+      scored: 1,
+      alertsCreated: 1,
+      alertsUpdated: 0,
+      notAlertWorthy: 0,
+      emailsSent: 0,
+      emailsFailed: 1,
+    });
 
     const summaryB1 = await processChangeAlertsForPipeline(admin, [checkB1!]);
-    expect(summaryB1).toEqual({ scored: 1, alertsCreated: 0, alertsUpdated: 0, notAlertWorthy: 1 });
+    expect(summaryB1).toEqual({
+      scored: 1,
+      alertsCreated: 0,
+      alertsUpdated: 0,
+      notAlertWorthy: 1,
+      emailsSent: 0,
+      emailsFailed: 0,
+    });
 
     const alertsA = await alertsFor(vendorAId);
     expect(alertsA).toHaveLength(1);
@@ -190,7 +215,14 @@ describe.skipIf(!hasEnv)("processChangeAlerts (integration)", () => {
     expect(p2Err, p2Err?.message).toBeNull();
 
     const summaryA2 = await processChangeAlertsForPipeline(admin, [checkA2!]);
-    expect(summaryA2).toEqual({ scored: 1, alertsCreated: 0, alertsUpdated: 1, notAlertWorthy: 0 });
+    expect(summaryA2).toEqual({
+      scored: 1,
+      alertsCreated: 0,
+      alertsUpdated: 1,
+      notAlertWorthy: 0,
+      emailsSent: 0,
+      emailsFailed: 0,
+    });
 
     const alertsAAfter = await alertsFor(vendorAId);
     // Still exactly one row — the repeat detection updated it, no duplicate.
