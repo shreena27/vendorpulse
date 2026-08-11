@@ -23,6 +23,7 @@ import {
   type TriggerType,
 } from "./createOrUpdateAlert";
 import { getAlertNudgeById } from "./queries";
+import { logEvent } from "@/lib/evidence/logEvent";
 import { sendAlertEmail } from "@/lib/email/sendAlertEmail";
 import { getResendClient } from "@/lib/email/resendClient";
 
@@ -51,6 +52,17 @@ export interface ProcessChangeAlertsDeps {
    * caught and counted, never thrown (one failure never aborts the batch,
    * same rule as pollRunner/bank verification). */
   notifyAlertCreated: (alertId: string, check: ChangedCheck) => Promise<void>;
+  /** Writes an evidence_log row for this alert result (created or updated) —
+   * called for every alert-worthy change that reaches createOrUpdateAlert,
+   * regardless of which branch it took. Unlike notifyAlertCreated, a failure
+   * here is NOT caught: an alert must never exist without a matching
+   * evidence row (ERD "Persistent data rules", Chunk 4.1). */
+  logAlertEvent: (
+    result: AlertResult,
+    check: ChangedCheck,
+    triggerType: TriggerType,
+    paymentImpactAmount: number,
+  ) => Promise<void>;
 }
 
 const TRIGGER_TYPE_BY_CHECK_TYPE: Record<CheckType, TriggerType> = {
@@ -85,13 +97,15 @@ export async function processChangeAlerts(
       }
 
       const paymentImpactAmount = await deps.getOpenPaymentAmount(check.vendorId);
+      const triggerType = TRIGGER_TYPE_BY_CHECK_TYPE[check.checkType];
       const result = await deps.createOrUpdateAlert({
         organizationId: check.organizationId,
         vendorId: check.vendorId,
-        triggerType: TRIGGER_TYPE_BY_CHECK_TYPE[check.checkType],
+        triggerType,
         sourceCheckId: check.id,
         paymentImpactAmount,
       });
+      await deps.logAlertEvent(result, check, triggerType, paymentImpactAmount);
       if (result.action === "created") {
         summary.alertsCreated++;
         try {
@@ -135,6 +149,15 @@ export async function processChangeAlertsForPipeline(
     getOpenPaymentAmount: (vendorId) => getOpenPaymentAmount(client, vendorId),
     createOrUpdateAlert: (input) => createOrUpdateAlert(client, input),
     notifyAlertCreated: (alertId, check) => notifyAlertCreated(supabase, alertId, check),
+    logAlertEvent: (result, check, triggerType, paymentImpactAmount) =>
+      logEvent(supabase, {
+        organizationId: check.organizationId,
+        vendorId: check.vendorId,
+        eventType: result.action === "created" ? "alert_created" : "alert_updated",
+        entityType: "alerts",
+        entityId: result.alertId,
+        payload: { triggerType, sourceCheckId: check.id, paymentImpactAmount },
+      }),
   });
 }
 

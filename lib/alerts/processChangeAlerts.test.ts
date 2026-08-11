@@ -33,6 +33,7 @@ function deps(opts: {
     })),
     notifyAlertCreated:
       opts.notifyAlertCreated ?? vi.fn<NotifyAlertCreatedFn>().mockResolvedValue(undefined),
+    logAlertEvent: vi.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -147,5 +148,41 @@ describe("processChangeAlerts", () => {
       emailsSent: 1,
       emailsFailed: 1,
     });
+  });
+
+  it("logs an evidence event for every alert-worthy change, both created and updated", async () => {
+    const created = check({ id: "c1", vendorId: "v-created" });
+    const updated = check({ id: "c2", vendorId: "v-updated", checkType: "msme_udyam" });
+    const d = deps({ alertWorthy: true, action: ["created", "updated"] });
+
+    await processChangeAlerts([created, updated], d);
+
+    expect(d.logAlertEvent).toHaveBeenCalledTimes(2);
+    expect(d.logAlertEvent).toHaveBeenNthCalledWith(
+      1,
+      { alertId: "alert-1", action: "created" },
+      created,
+      "gst_change",
+      1000,
+    );
+    expect(d.logAlertEvent).toHaveBeenNthCalledWith(
+      2,
+      { alertId: "alert-1", action: "updated" },
+      updated,
+      "msme_change",
+      1000,
+    );
+  });
+
+  it("does not call logAlertEvent for a change that isn't alert-worthy", async () => {
+    const d = deps({ alertWorthy: false });
+    await processChangeAlerts([check()], d);
+    expect(d.logAlertEvent).not.toHaveBeenCalled();
+  });
+
+  it("propagates a logAlertEvent failure instead of swallowing it", async () => {
+    const d = deps({ alertWorthy: true });
+    d.logAlertEvent = vi.fn().mockRejectedValue(new Error("evidence log down"));
+    await expect(processChangeAlerts([check()], d)).rejects.toThrow(/evidence log down/);
   });
 });
