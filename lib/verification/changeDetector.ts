@@ -8,6 +8,7 @@
  */
 
 import type { CheckType, CheckProvider } from "@/lib/supabase/types";
+import type { EvidenceEventInput } from "@/lib/evidence/logEvent";
 
 /**
  * True when the new status differs from the prior one. A vendor's FIRST check
@@ -94,4 +95,61 @@ export function buildCheck(
     is_change: detectChange(priorStatus, outcome.status),
     checked_at: checkedAt,
   };
+}
+
+/** The shape buildCheckEvidenceEvents needs — exactly what pollRunner selects
+ * back after inserting verification_checks rows (their DB-generated ids,
+ * status_value/provider for the payload, is_change to decide the second
+ * event). Narrower than BuiltCheck: no raw_response/checked_at — evidence
+ * events don't carry those. */
+export interface InsertedCheck {
+  id: string;
+  organization_id: string;
+  vendor_id: string;
+  check_type: CheckType;
+  status_value: string;
+  provider: CheckProvider;
+  is_change: boolean;
+}
+
+/**
+ * Turns freshly-inserted verification_checks rows into evidence_log events
+ * (Chunk 4.1): one `verification_check` event per row (every check, changed
+ * or not), plus one additional `status_change` event for the is_change=true
+ * subset. Pure — pollRunner.ts calls this after the DB insert returns the
+ * rows' ids, then hands the result to lib/evidence/logEvent.ts to write.
+ */
+export function buildCheckEvidenceEvents(
+  checks: InsertedCheck[],
+): EvidenceEventInput[] {
+  const events: EvidenceEventInput[] = [];
+  for (const check of checks) {
+    events.push({
+      organizationId: check.organization_id,
+      vendorId: check.vendor_id,
+      eventType: "verification_check",
+      entityType: "verification_checks",
+      entityId: check.id,
+      payload: {
+        checkType: check.check_type,
+        statusValue: check.status_value,
+        provider: check.provider,
+        isChange: check.is_change,
+      },
+    });
+    if (check.is_change) {
+      events.push({
+        organizationId: check.organization_id,
+        vendorId: check.vendor_id,
+        eventType: "status_change",
+        entityType: "verification_checks",
+        entityId: check.id,
+        payload: {
+          checkType: check.check_type,
+          newStatusValue: check.status_value,
+        },
+      });
+    }
+  }
+  return events;
 }

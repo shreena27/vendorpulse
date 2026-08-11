@@ -4,6 +4,7 @@ import {
   mapGstStatusToVendor,
   mapMsmeStatusToVendor,
   buildCheck,
+  buildCheckEvidenceEvents,
 } from "./changeDetector";
 
 describe("detectChange", () => {
@@ -72,5 +73,54 @@ describe("buildCheck", () => {
       now,
     );
     expect(row.is_change).toBe(false);
+  });
+});
+
+describe("buildCheckEvidenceEvents", () => {
+  const base = {
+    organization_id: "org1",
+    vendor_id: "v1",
+    check_type: "gst" as const,
+    status_value: "ACTIVE",
+    provider: "mock" as const,
+  };
+
+  it("emits one verification_check event for an unchanged check", () => {
+    const events = buildCheckEvidenceEvents([{ ...base, id: "c1", is_change: false }]);
+    expect(events).toEqual([
+      {
+        organizationId: "org1",
+        vendorId: "v1",
+        eventType: "verification_check",
+        entityType: "verification_checks",
+        entityId: "c1",
+        payload: { checkType: "gst", statusValue: "ACTIVE", provider: "mock", isChange: false },
+      },
+    ]);
+  });
+
+  it("emits both a verification_check and a status_change event for a changed check", () => {
+    const events = buildCheckEvidenceEvents([
+      { ...base, id: "c1", is_change: true, status_value: "CANCELLED" },
+    ]);
+    expect(events).toHaveLength(2);
+    expect(events.map((e) => e.eventType)).toEqual(["verification_check", "status_change"]);
+    expect(events[1]).toEqual({
+      organizationId: "org1",
+      vendorId: "v1",
+      eventType: "status_change",
+      entityType: "verification_checks",
+      entityId: "c1",
+      payload: { checkType: "gst", newStatusValue: "CANCELLED" },
+    });
+  });
+
+  it("returns one event per unchanged check and two per changed check across a mixed batch", () => {
+    const events = buildCheckEvidenceEvents([
+      { ...base, id: "c1", is_change: false },
+      { ...base, id: "c2", is_change: true },
+      { ...base, id: "c3", is_change: false },
+    ]);
+    expect(events).toHaveLength(4);
   });
 });
