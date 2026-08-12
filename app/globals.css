@@ -30,6 +30,15 @@
   --color-on-error: #ffffff;
   --color-error-container: #ffdad6;
   --color-on-error-container: #93000a;
+  /* Success (compliant/verified) — not in the Stitch export's own token set;
+   * its one dashboard code.html sample reused `primary` (a dark teal) for
+   * Active/Verified pills, but DESIGN.md's own text calls for a genuine
+   * traffic-light green distinct from the brand teal ("Success, Warning, and
+   * Critical colors follow standard financial compliance patterns"). A
+   * muted teal-at-10%-opacity badge read as neutral/grey rather than
+   * clearly "compliant," so this adds the missing token rather than
+   * following the one sample literally. */
+  --color-success: #15803d;
   --color-surface: #f7f9fb;
   --color-surface-dim: #d8dadc;
   --color-surface-bright: #f7f9fb;

@@ -6,15 +6,18 @@ import type { Badge, BadgeTone } from "@/lib/vendors/statusBadge";
 //
 // Colors follow the Stitch design system's traffic-light convention
 // (docs/superpowers/plans/2026-08-12-visual-polish-stitch-designs.md):
-// green/red reuse the exact `bg-primary/10 text-primary` / `bg-error/10
-// text-error` pairs every Stitch reference uses for Active/Verified and
-// Inactive; amber reuses Stitch's own literal pending-pill colors
-// (#FFF3CD/#856404); blue (our "identifier present, no check yet" Pending
-// tone — a different concept than Stitch's example) reuses the palette's
-// secondary-container, which is itself a light blue; gray/neutral reuse
-// surface-variant.
+// green = compliant/verified (Active, Registered, Verified), amber = needs
+// a look (Manual review, Lapsed, Pending), red = expired/cancelled
+// (Cancelled, Inactive, Mismatch). green uses the dedicated `success` token
+// (globals.css) — not Stitch's own dashboard sample, which reused the
+// brand-teal `primary` for this and read as neutral/grey rather than
+// clearly "compliant." red reuses `bg-error/10 text-error`; amber reuses
+// Stitch's own literal pending-pill colors (#FFF3CD/#856404); blue (our
+// "identifier present, no check yet" Pending tone — a different concept
+// than Stitch's example) reuses the palette's secondary-container, which is
+// itself a light blue; gray/neutral reuse surface-variant.
 const TONE_CLASSES: Record<BadgeTone, string> = {
-  green: "bg-primary/10 text-primary",
+  green: "bg-success/10 text-success",
   red: "bg-error/10 text-error",
   amber: "bg-[#FFF3CD] text-[#856404]",
   blue: "bg-secondary-container text-on-secondary-container",
