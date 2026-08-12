@@ -9,6 +9,7 @@ import {
   type SchemaField,
   type RowIssue,
 } from "@/lib/import/validateVendorRow";
+import { AppNav } from "@/app/components/AppNav";
 
 type ImportResult = {
   importId: string;
@@ -32,6 +33,17 @@ const FIELD_LABELS: Record<SchemaField, string> = {
   pan: "PAN",
   bank_account_number: "Bank account number",
   bank_ifsc: "IFSC",
+};
+
+// Decorative only — each field's icon in the mapping row (Stitch's
+// "Detected Header" column icon treatment). Doesn't affect mapping logic.
+const FIELD_ICONS: Record<SchemaField, string> = {
+  name: "match_case",
+  gstin: "tag",
+  udyam_number: "badge",
+  pan: "fingerprint",
+  bank_account_number: "account_balance",
+  bank_ifsc: "pin",
 };
 
 const REQUIRED_FIELDS: SchemaField[] = ["name"];
@@ -138,104 +150,194 @@ export default function ImportVendorsPage() {
   const canSubmit =
     !!file && headers.length > 0 && !!mapping.name && !submitting;
 
-  return (
-    <div className="flex flex-1 flex-col">
-      <header className="flex items-center justify-between border-b border-black/[.08] px-6 py-4 dark:border-white/[.12]">
-        <span className="text-lg font-semibold tracking-tight text-black dark:text-zinc-50">
-          VendorPulse
-        </span>
-        <Link
-          href="/vendors"
-          className="text-sm text-zinc-600 underline-offset-4 hover:underline dark:text-zinc-400"
-        >
-          View vendors
-        </Link>
-      </header>
+  // Decorative "Auto-mapped X/Y" chip — a real count off the already-guessed
+  // mapping state, not a fabricated Stitch-style number.
+  const mappedCount = SCHEMA_FIELDS.filter((f) => !!mapping[f]).length;
 
-      <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-8 p-6">
-        <section className="flex flex-col gap-1">
-          <h1 className="text-2xl font-semibold tracking-tight text-black dark:text-zinc-50">
-            Import vendors
-          </h1>
-          <p className="text-zinc-600 dark:text-zinc-400">
-            Upload a CSV or XLSX export from Tally, Excel, or your ERP. Map its
-            columns, then import.
-          </p>
-        </section>
+  return (
+    <div className="flex min-h-screen flex-col bg-background">
+      <AppNav />
+
+      <main className="mx-auto flex w-full max-w-[1440px] flex-1 flex-col gap-stack-lg px-margin-x-mobile py-stack-lg md:px-margin-x-desktop">
+        {/* Header + decorative step indicator */}
+        <div className="flex flex-col gap-stack-md md:flex-row md:items-end md:justify-between">
+          <div className="flex flex-col gap-base">
+            <h1 className="font-headline-xl text-headline-lg-mobile text-on-surface md:text-headline-xl">
+              Import vendors
+            </h1>
+            <p className="font-body-lg text-body-lg text-on-surface-variant">
+              Upload a CSV or XLSX export from Tally, Excel, or your ERP. Map
+              its columns, then import.
+            </p>
+          </div>
+
+          {/* Purely presentational — lit up from headers.length, no new logic. */}
+          <div aria-hidden="true" className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
+              <div
+                className={`flex h-8 w-8 items-center justify-center rounded-full ${
+                  file
+                    ? "bg-primary text-on-primary"
+                    : "border-2 border-primary text-primary"
+                }`}
+              >
+                {file ? (
+                  <span className="material-symbols-outlined text-[18px]">
+                    check
+                  </span>
+                ) : (
+                  <span className="font-label-md text-label-md">1</span>
+                )}
+              </div>
+              <span
+                className={`font-label-md text-label-md ${
+                  file ? "text-primary" : "text-on-surface"
+                }`}
+              >
+                Choose file
+              </span>
+            </div>
+            <div className="h-[2px] w-12 bg-outline-variant/50" />
+            <div className="flex items-center gap-2">
+              <div
+                className={`flex h-8 w-8 items-center justify-center rounded-full font-label-md text-label-md ${
+                  headers.length > 0
+                    ? "bg-primary text-on-primary"
+                    : "border-2 border-outline-variant text-outline"
+                }`}
+              >
+                2
+              </div>
+              <span
+                className={`font-label-md text-label-md ${
+                  headers.length > 0
+                    ? "text-primary"
+                    : "text-on-surface-variant"
+                }`}
+              >
+                Map columns
+              </span>
+            </div>
+          </div>
+        </div>
 
         {/* Step 1 — file */}
-        <section className="flex flex-col gap-3">
-          <label
-            htmlFor="vendor-file"
-            className="text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400"
-          >
-            1. Choose a file
-          </label>
-          <input
-            id="vendor-file"
-            type="file"
-            accept=".csv,.xlsx"
-            onChange={handleFile}
-            className="block text-sm text-zinc-700 file:mr-4 file:rounded-full file:border file:border-black/[.12] file:bg-transparent file:px-4 file:py-1.5 file:text-sm file:font-medium hover:file:bg-black/[.04] dark:text-zinc-300 dark:file:border-white/[.16] dark:hover:file:bg-white/[.06]"
-          />
-          {fileName && !parseError && (
-            <p className="text-sm text-zinc-500 dark:text-zinc-400">
-              {fileName} — {previewRows.length > 0 ? "ready to map" : "reading…"}
-            </p>
-          )}
-          {parseError && (
-            <p role="alert" className="text-sm text-red-600 dark:text-red-400">
-              {parseError}
-            </p>
-          )}
+        <section className="ambient-shadow flex flex-col gap-stack-md rounded-xl border border-surface-container bg-surface-container-lowest p-gutter">
+          <h2 className="font-headline-md text-headline-md text-on-surface">
+            Source file
+          </h2>
+          <div className="flex flex-col gap-stack-sm">
+            <label
+              htmlFor="vendor-file"
+              className="font-label-md text-label-md uppercase tracking-wide text-on-surface-variant"
+            >
+              1. Choose a file
+            </label>
+            <input
+              id="vendor-file"
+              type="file"
+              accept=".csv,.xlsx"
+              onChange={handleFile}
+              className="block font-body-sm text-body-sm text-on-surface-variant file:mr-4 file:rounded-full file:border file:border-primary file:bg-transparent file:px-4 file:py-1.5 file:font-label-md file:text-label-sm file:text-primary hover:file:bg-primary/5"
+            />
+            {fileName && !parseError && (
+              <p className="flex items-center gap-2 font-body-sm text-body-sm text-on-surface-variant">
+                <span
+                  aria-hidden
+                  className="material-symbols-outlined text-[18px] text-primary"
+                >
+                  description
+                </span>
+                {fileName} —{" "}
+                {previewRows.length > 0 ? "ready to map" : "reading…"}
+              </p>
+            )}
+            {parseError && (
+              <p role="alert" className="font-body-sm text-body-sm text-error">
+                {parseError}
+              </p>
+            )}
+          </div>
         </section>
 
         {/* Step 2 — mapping */}
         {headers.length > 0 && (
-          <section className="flex flex-col gap-3">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-              2. Map columns
-            </h2>
-            <div className="flex flex-col gap-3">
+          <section className="ambient-shadow flex flex-col overflow-hidden rounded-xl border border-surface-container bg-surface-container-lowest">
+            <div className="flex flex-col gap-stack-sm border-b border-surface-container bg-surface-bright p-gutter md:flex-row md:items-center md:justify-between">
+              <div>
+                <h2 className="font-headline-md text-headline-md text-on-surface">
+                  2. Map columns
+                </h2>
+                <p className="mt-1 font-body-sm text-body-sm text-on-surface-variant">
+                  Match your spreadsheet headers to VendorPulse system fields.
+                </p>
+              </div>
+              <div className="flex w-fit items-center gap-2 rounded-full border border-outline-variant/30 bg-surface-container-low px-3 py-1.5">
+                <span className="material-symbols-outlined text-[16px] text-primary">
+                  auto_awesome
+                </span>
+                <span className="font-label-sm text-label-sm text-on-surface">
+                  Auto-mapped {mappedCount}/{SCHEMA_FIELDS.length}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex flex-col divide-y divide-surface-container">
               {SCHEMA_FIELDS.map((field) => (
                 <div
                   key={field}
-                  className="flex items-center justify-between gap-4 rounded-md border border-black/[.08] px-4 py-2 dark:border-white/[.12]"
+                  className="flex flex-col gap-stack-sm px-gutter py-stack-md transition-colors hover:bg-surface-container-low/30 md:flex-row md:items-center md:justify-between"
                 >
-                  <span className="text-sm text-black dark:text-zinc-50">
+                  <span className="flex items-center gap-2 font-label-md text-label-md text-on-surface">
+                    <span
+                      aria-hidden
+                      className="material-symbols-outlined text-[18px] text-outline"
+                    >
+                      {FIELD_ICONS[field]}
+                    </span>
                     {FIELD_LABELS[field]}
                     {REQUIRED_FIELDS.includes(field) && (
-                      <span className="text-red-600 dark:text-red-400"> *</span>
+                      <span className="text-error"> *</span>
                     )}
                   </span>
-                  <select
-                    aria-label={`Column for ${FIELD_LABELS[field]}`}
-                    value={mapping[field] ?? ""}
-                    onChange={(e) => setFieldColumn(field, e.target.value)}
-                    className="rounded-md border border-black/[.12] bg-transparent px-2 py-1 text-sm dark:border-white/[.16]"
-                  >
-                    <option value="">— not mapped —</option>
-                    {headers.map((h) => (
-                      <option key={h} value={h}>
-                        {h}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="relative w-full md:w-64">
+                    <select
+                      aria-label={`Column for ${FIELD_LABELS[field]}`}
+                      value={mapping[field] ?? ""}
+                      onChange={(e) => setFieldColumn(field, e.target.value)}
+                      className="w-full appearance-none rounded-lg border border-outline-variant bg-surface-container-lowest px-3 py-2 pr-8 font-body-md text-body-md text-on-surface transition-shadow focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary focus:ring-opacity-50"
+                    >
+                      <option value="">— not mapped —</option>
+                      {headers.map((h) => (
+                        <option key={h} value={h}>
+                          {h}
+                        </option>
+                      ))}
+                    </select>
+                    <span
+                      aria-hidden
+                      className="material-symbols-outlined pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[18px] text-outline"
+                    >
+                      expand_more
+                    </span>
+                  </div>
                 </div>
               ))}
             </div>
 
             {previewRows.length > 0 && (
-              <details className="text-sm text-zinc-600 dark:text-zinc-400">
-                <summary className="cursor-pointer">Preview first rows</summary>
-                <div className="mt-2 overflow-x-auto">
+              <details className="border-t border-surface-container px-gutter py-stack-md font-body-sm text-body-sm text-on-surface-variant">
+                <summary className="cursor-pointer font-label-md text-label-md text-primary">
+                  Preview first rows
+                </summary>
+                <div className="mt-2 overflow-x-auto rounded-lg border border-surface-container">
                   <table className="min-w-full border-collapse text-left">
                     <thead>
-                      <tr>
+                      <tr className="bg-surface-container-low">
                         {headers.map((h) => (
                           <th
                             key={h}
-                            className="border-b border-black/[.08] px-2 py-1 font-medium dark:border-white/[.12]"
+                            className="whitespace-nowrap border-b border-surface-container px-3 py-2 font-label-sm text-label-sm uppercase tracking-wider text-on-surface-variant"
                           >
                             {h}
                           </th>
@@ -244,11 +346,11 @@ export default function ImportVendorsPage() {
                     </thead>
                     <tbody>
                       {previewRows.map((r, i) => (
-                        <tr key={i}>
+                        <tr key={i} className="zebra-row">
                           {headers.map((h) => (
                             <td
                               key={h}
-                              className="border-b border-black/[.04] px-2 py-1 dark:border-white/[.08]"
+                              className="border-b border-surface-container/50 px-3 py-2 font-mono text-body-sm text-on-surface"
                             >
                               {r[h]}
                             </td>
@@ -265,17 +367,20 @@ export default function ImportVendorsPage() {
 
         {/* Step 3 — import */}
         {headers.length > 0 && (
-          <section className="flex flex-col gap-3">
+          <section className="flex flex-col gap-stack-sm">
             <button
               type="button"
               onClick={handleSubmit}
               disabled={!canSubmit}
-              className="w-fit rounded-full bg-black px-5 py-2 text-sm font-medium text-white transition-colors hover:bg-black/80 disabled:opacity-40 dark:bg-white dark:text-black dark:hover:bg-white/80"
+              className="flex w-fit items-center gap-2 rounded-lg bg-primary px-8 py-2.5 font-label-md text-label-md text-on-primary shadow-sm transition-colors hover:bg-primary-container hover:text-on-primary-container disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-primary disabled:hover:text-on-primary"
             >
+              <span aria-hidden className="material-symbols-outlined text-[18px]">
+                publish
+              </span>
               {submitting ? "Importing…" : "Import vendors"}
             </button>
             {submitError && (
-              <p role="alert" className="text-sm text-red-600 dark:text-red-400">
+              <p role="alert" className="font-body-sm text-body-sm text-error">
                 {submitError}
               </p>
             )}
@@ -284,23 +389,23 @@ export default function ImportVendorsPage() {
 
         {/* Result report */}
         {result && (
-          <section className="flex flex-col gap-3 rounded-md border border-black/[.08] p-4 dark:border-white/[.12]">
-            <h2 className="text-base font-semibold text-black dark:text-zinc-50">
+          <section className="ambient-shadow flex flex-col gap-stack-md rounded-xl border border-surface-container bg-surface-container-lowest p-gutter">
+            <h2 className="font-headline-md text-headline-md text-on-surface">
               Imported {result.inserted} of {result.total} vendors
             </h2>
             {result.errorCount > 0 ? (
-              <p className="text-sm text-zinc-600 dark:text-zinc-400">
+              <p className="font-body-sm text-body-sm text-on-surface-variant">
                 {result.errorCount}{" "}
                 {result.errorCount === 1 ? "row was" : "rows were"} skipped.
               </p>
             ) : (
-              <p className="text-sm text-zinc-600 dark:text-zinc-400">
+              <p className="font-body-sm text-body-sm text-on-surface-variant">
                 Every row imported cleanly.
               </p>
             )}
 
             {result.bankVerifications && (
-              <p className="text-sm text-zinc-600 dark:text-zinc-400">
+              <p className="font-body-sm text-body-sm text-on-surface-variant">
                 Bank check: {result.bankVerifications.verified} verified,{" "}
                 {result.bankVerifications.manualReview} need manual review,{" "}
                 {result.bankVerifications.mismatch} mismatched
@@ -311,15 +416,15 @@ export default function ImportVendorsPage() {
             )}
 
             {result.errors.length > 0 && (
-              <div className="flex flex-col gap-1">
-                <h3 className="text-sm font-semibold text-red-600 dark:text-red-400">
+              <div className="flex flex-col gap-stack-sm">
+                <h3 className="font-label-md text-label-md font-semibold text-error">
                   Skipped rows
                 </h3>
                 <ul className="flex flex-col gap-1">
                   {result.errors.map((e, i) => (
                     <li
                       key={i}
-                      className="text-sm text-zinc-700 dark:text-zinc-300"
+                      className="font-body-sm text-body-sm text-on-surface-variant"
                     >
                       Row {e.row} — {e.field}: {e.message}
                     </li>
@@ -329,15 +434,15 @@ export default function ImportVendorsPage() {
             )}
 
             {result.warnings.length > 0 && (
-              <div className="flex flex-col gap-1">
-                <h3 className="text-sm font-semibold text-amber-600 dark:text-amber-400">
+              <div className="flex flex-col gap-stack-sm">
+                <h3 className="font-label-md text-label-md font-semibold text-[#856404]">
                   Warnings
                 </h3>
                 <ul className="flex flex-col gap-1">
                   {result.warnings.map((w, i) => (
                     <li
                       key={i}
-                      className="text-sm text-zinc-700 dark:text-zinc-300"
+                      className="font-body-sm text-body-sm text-on-surface-variant"
                     >
                       Row {w.row} — {w.field}: {w.message}
                     </li>
@@ -348,7 +453,7 @@ export default function ImportVendorsPage() {
 
             <Link
               href="/vendors"
-              className="w-fit text-sm font-medium text-black underline underline-offset-4 dark:text-zinc-50"
+              className="w-fit font-label-md text-label-md text-primary underline underline-offset-4 hover:text-primary-container"
             >
               View all vendors →
             </Link>
