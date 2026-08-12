@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { signOut } from "../(auth)/actions";
 
 type Tab = "vendors" | "alerts" | "evidence" | null;
 
@@ -21,10 +22,11 @@ function activeTabFor(pathname: string): Tab {
   return null;
 }
 
-/** Shared top nav (Stitch: every screen except login). Bell is decorative —
- * this app has no notifications feature. Settings and the avatar both link
- * to /dashboard, the app's one existing account/org page (where "Log out"
- * already lives) — not a new feature, just where an existing one is reachable. */
+/** Shared top nav (Stitch: every screen except login). Bell and settings are
+ * decorative — this app has no notifications or settings feature, and
+ * /dashboard (their old destination) no longer has any content of its own,
+ * it just redirects to /vendors. The avatar is the one real action: signing
+ * out, via the same server action /dashboard's old "Log out" button used. */
 export function AppNav() {
   const pathname = usePathname();
   const active = activeTabFor(pathname);
@@ -64,20 +66,23 @@ export function AppNav() {
         >
           <span className="material-symbols-outlined">notifications</span>
         </span>
-        <Link
-          href="/dashboard"
-          className="rounded-full p-2 text-on-primary transition-colors hover:bg-primary-container/20"
-          title="Organization settings"
+        <span
+          aria-hidden
+          className="rounded-full p-2 text-on-primary/70"
+          title="Settings (not available yet)"
         >
           <span className="material-symbols-outlined">settings</span>
-        </Link>
-        <Link
-          href="/dashboard"
-          className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full border border-outline-variant/30 bg-surface-variant text-on-surface-variant"
-          title="Your account"
-        >
-          <span className="material-symbols-outlined text-[20px]">account_circle</span>
-        </Link>
+        </span>
+        <form action={signOut}>
+          <button
+            type="submit"
+            aria-label="Log out"
+            title="Log out"
+            className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full border border-outline-variant/30 bg-surface-variant text-on-surface-variant transition-colors hover:bg-surface-container-high"
+          >
+            <span className="material-symbols-outlined text-[20px]">account_circle</span>
+          </button>
+        </form>
       </div>
     </header>
   );

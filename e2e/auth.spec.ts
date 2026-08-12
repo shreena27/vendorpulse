@@ -1,8 +1,13 @@
 import { test, expect } from "@playwright/test";
 
 /**
- * Chunk 0.1 acceptance: sign up -> dashboard -> log out -> log in, plus the
+ * Chunk 0.1 acceptance: sign up -> /vendors -> log out -> log in, plus the
  * two failure paths (protected route redirect, wrong password inline error).
+ *
+ * /vendors is the real product home post-signup — /dashboard has no content
+ * of its own anymore, it only redirects there, so it no longer has a
+ * landing-destination role in this flow (see the second test below, which
+ * still exercises it as a protected route).
  *
  * Prerequisite: Supabase "Confirm email" is OFF, so sign-up creates a session
  * immediately.
@@ -24,26 +29,25 @@ const PASSWORD = "test-password-123";
 test("sign up, log out, and log back in", async ({ page }) => {
   const email = uniqueEmail();
 
-  // Sign up -> lands on the dashboard shell.
+  // Sign up -> lands on /vendors, the real product home.
   await page.goto("/signup");
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill(PASSWORD);
   await page.getByRole("button", { name: "Sign up" }).click();
 
-  await expect(page).toHaveURL(/\/dashboard$/);
+  await expect(page).toHaveURL(/\/vendors$/);
   await expect(page.getByRole("button", { name: "Log out" })).toBeVisible();
-  await expect(page.getByText(email).first()).toBeVisible();
 
   // Log out -> back to the login page.
   await page.getByRole("button", { name: "Log out" }).click();
   await expect(page).toHaveURL(/\/login$/);
 
-  // Log back in with the same credentials -> dashboard again.
+  // Log back in with the same credentials -> /vendors again.
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill(PASSWORD);
   await page.getByRole("button", { name: "Log in" }).click();
 
-  await expect(page).toHaveURL(/\/dashboard$/);
+  await expect(page).toHaveURL(/\/vendors$/);
   await expect(page.getByRole("button", { name: "Log out" })).toBeVisible();
 });
 
@@ -62,7 +66,7 @@ test("wrong password shows an inline error, not a redirect loop", async ({
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill(PASSWORD);
   await page.getByRole("button", { name: "Sign up" }).click();
-  await expect(page).toHaveURL(/\/dashboard$/);
+  await expect(page).toHaveURL(/\/vendors$/);
 
   // Log out, then try the wrong password.
   await page.getByRole("button", { name: "Log out" }).click();

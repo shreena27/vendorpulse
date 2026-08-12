@@ -20,14 +20,14 @@ function uniqueEmail(tag: string) {
   return `vendorpulse.import.${tag}.${stamp}.${rand}@gmail.com`;
 }
 
-/** Sign up through the UI; lands on the dashboard with a live session. */
+/** Sign up through the UI; lands on /vendors with a live session. */
 async function signUp(page: Page, tag: string) {
   const email = uniqueEmail(tag);
   await page.goto("/signup");
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill(PASSWORD);
   await page.getByRole("button", { name: "Sign up" }).click();
-  await expect(page).toHaveURL(/\/dashboard$/);
+  await expect(page).toHaveURL(/\/vendors$/);
   return email;
 }
 

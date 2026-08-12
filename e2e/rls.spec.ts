@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { createClient } from "@supabase/supabase-js";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "../lib/supabase/types";
 
 /**
@@ -7,13 +7,15 @@ import type { Database } from "../lib/supabase/types";
  *
  * 1. A signed-up user is auto-assigned to an organization row.
  * 2. One org's user can never SELECT another org's rows — checked directly
- *    against Postgres (via PostgREST with the user's own JWT), and in the UI.
+ *    against Postgres (via PostgREST with the user's own JWT), and in the UI
+ *    (on /vendors, the real product home post-signup).
  *
  * Prerequisite: migration 0001_core.sql is applied and "Confirm email" is off.
  */
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+const SERVICE = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const PASSWORD = "test-password-123";
 
 function uniqueEmail(tag: string) {
@@ -25,6 +27,12 @@ function uniqueEmail(tag: string) {
 /** A fresh Supabase JS client (isolated session per caller). */
 function freshClient() {
   return createClient<Database>(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+}
+
+function adminClient(): SupabaseClient<Database> {
+  return createClient<Database>(SUPABASE_URL, SERVICE, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 }
@@ -90,7 +98,7 @@ test("RLS blocks cross-tenant SELECT on organizations and users", async () => {
   expect(bSeesOrgA).toHaveLength(0);
 });
 
-test("dashboard shows only the signed-in user's own org and member", async ({
+test("the vendors page shows only the signed-in user's own org's vendors", async ({
   browser,
 }) => {
   // Two users in two different orgs, each in an isolated browser context.
@@ -104,22 +112,47 @@ test("dashboard shows only the signed-in user's own org and member", async ({
     await page.getByLabel("Email").fill(email);
     await page.getByLabel("Password").fill(PASSWORD);
     await page.getByRole("button", { name: "Sign up" }).click();
-    await expect(page).toHaveURL(/\/dashboard$/);
+    await expect(page).toHaveURL(/\/vendors$/);
     return { context, page };
   }
 
   const a = await signUpInUi(emailA);
   const b = await signUpInUi(emailB);
 
-  // A's dashboard shows A's org name and A's email, never B's.
-  await expect(a.page.getByRole("heading", { name: emailA })).toBeVisible();
-  await expect(a.page.getByText(emailA).first()).toBeVisible();
-  await expect(a.page.getByText(emailB)).toHaveCount(0);
+  // Seed one distinctly-named vendor per org via the service-role client —
+  // deterministic, same seeding pattern every other e2e spec in this
+  // codebase uses. /vendors has no org name/email display of its own, so a
+  // vendor name is the UI-visible signal this test checks isolation with.
+  const admin = adminClient();
+  async function orgIdFor(email: string) {
+    const { data, error } = await admin
+      .from("users")
+      .select("organization_id")
+      .eq("email", email)
+      .single();
+    if (error || !data) throw new Error(`[seed] user lookup failed: ${error?.message} (email ${email})`);
+    return data.organization_id;
+  }
+  const [orgIdA, orgIdB] = await Promise.all([orgIdFor(emailA), orgIdFor(emailB)]);
 
-  // B's dashboard shows B's data, never A's.
-  await expect(b.page.getByRole("heading", { name: emailB })).toBeVisible();
-  await expect(b.page.getByText(emailB).first()).toBeVisible();
-  await expect(b.page.getByText(emailA)).toHaveCount(0);
+  const stamp = Date.now();
+  const vendorNameA = `RLS UI Test Vendor A ${stamp}`;
+  const vendorNameB = `RLS UI Test Vendor B ${stamp}`;
+  const { error: seedErr } = await admin.from("vendors").insert([
+    { organization_id: orgIdA, name: vendorNameA, source: "excel" },
+    { organization_id: orgIdB, name: vendorNameB, source: "excel" },
+  ]);
+  if (seedErr) throw new Error(`[seed] vendor insert failed: ${seedErr.message}`);
+
+  // A's vendor list shows only A's vendor, never B's.
+  await a.page.goto("/vendors");
+  await expect(a.page.getByText(vendorNameA)).toBeVisible();
+  await expect(a.page.getByText(vendorNameB)).toHaveCount(0);
+
+  // B's vendor list shows only B's vendor, never A's.
+  await b.page.goto("/vendors");
+  await expect(b.page.getByText(vendorNameB)).toBeVisible();
+  await expect(b.page.getByText(vendorNameA)).toHaveCount(0);
 
   await a.context.close();
   await b.context.close();

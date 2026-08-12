@@ -50,7 +50,7 @@ test.describe.serial("vendor status dashboard", () => {
     await page.getByLabel("Email").fill(email);
     await page.getByLabel("Password").fill(PASSWORD);
     await page.getByRole("button", { name: "Sign up" }).click();
-    await expect(page).toHaveURL(/\/dashboard$/);
+    await expect(page).toHaveURL(/\/vendors$/);
 
     admin = createClient<Database>(SUPABASE_URL, SERVICE, {
       auth: { persistSession: false, autoRefreshToken: false },

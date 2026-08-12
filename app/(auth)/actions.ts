@@ -30,7 +30,7 @@ export async function login(
     return { error: "Wrong email or password. Try again." };
   }
 
-  redirect("/dashboard");
+  redirect("/vendors");
 }
 
 export async function signup(
@@ -53,7 +53,7 @@ export async function signup(
     return { error: error.message };
   }
 
-  redirect("/dashboard");
+  redirect("/vendors");
 }
 
 export async function signOut() {
