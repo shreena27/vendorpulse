@@ -737,6 +737,31 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
   `verification_checks` — no separate "risk view shown" UI event exists,
   since building one was out of scope for this chunk.
 
+**Chunk 5.3 — End-to-end flow verification suite: DONE.**
+- `e2e/flows/*.spec.ts` — one file per PRD §8 user story, each covering its
+  happy path plus at least one failure/edge case (Implementation Plan's own
+  acceptance criteria): connect vendor list (+ a corrupt file, rejected
+  cleanly); same-day GST alert (+ the no-open-payment case, which creates
+  no alert); vendor status recall (+ a vendor with zero checks); LEI alert
+  before a large payment (+ below-threshold non-trigger, + a vendor with no
+  LEI on file resolving `not_on_record`); Clause 22 export (+ the "time
+  travel" case — a payment's own due date resolves its MSME status as of
+  THAT date, even after a later status change); alert decision logged (+
+  the double-action 409 case, asserted to never double-write
+  `evidence_log`).
+- `e2e/flows/02-same-day-gst-alert.spec.ts` is the one file that goes
+  beyond every other e2e spec's "seed the finished state, check the UI"
+  pattern: it imports and calls the real `processChangeAlertsForPipeline`
+  (Chunk 3.2) directly against seeded `verification_checks` rows, so it
+  proves the alert-worthy decision itself — not just that the inbox
+  correctly renders a row that was pre-faked into existence. Confirmed
+  importable from a Playwright spec the same way
+  `e2e/bank-verification.spec.ts` already imports
+  `lib/providers/bank/mockAdapter.ts` (which itself imports via the `@/*`
+  alias) — the test runner already resolves that alias transitively.
+- No schema or application code changes — this chunk is pure verification
+  over Phases 0–5.1.
+
 **Testing.**
 - Playwright e2e lives in `e2e/`. Run `npm run test:e2e`.
 - `e2e/auth.spec.ts` covers sign-up, log out, log in, the protected-route redirect, and the wrong-password inline error.
@@ -1017,8 +1042,8 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
 
 Phase 1, Phase 2 (onboarding-only verification: bank + certificates), Phase 3 (alerting: impact
 scorer → alert generation/dedupe → inbox UI + one-tap actions + email), Phase 4 (evidence log
-wiring, Clause 22 / Form 3CD export, LEI pre-payment check), and Chunk 5.1 (metrics instrumentation)
-are complete. A detected change with a payment in flight now reaches a real person's inbox, by email
+wiring, Clause 22 / Form 3CD export, LEI pre-payment check), Chunk 5.1 (metrics instrumentation),
+and Chunk 5.3 (end-to-end flow verification suite) are complete. A detected change with a payment in flight now reaches a real person's inbox, by email
 and in-app, they can resolve it with one click, every step of that cycle has a matching, physically
 tamper-proof `evidence_log` row, a finance head can export exactly what was true on any past date for
 every payment due to an MSME vendor, a large RTGS/NEFT payment gets a pre-payment LEI check that
@@ -1040,8 +1065,6 @@ are both real. Phase 5 continues:
   pilot needs it; until then these are submitted by hand (support conversation → a script that calls
   `track()` directly), same as `section11.integration.test.ts` simulates.
 - **Chunk 5.2 (pilot hardening + provider rate limiting)** — not started.
-- **Chunk 5.3 (end-to-end verification suite)** — not started: one Playwright file per PRD §8 user
-  story.
 
 ### Backlog (not scheduled)
 
