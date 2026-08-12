@@ -153,10 +153,19 @@ export function computeTimeToFirstValue(input: {
   /** [vendorCreatedAt, firstCheckedAt | null] pairs. */
   pairs: [string, string | null][];
 }): MetricResult {
+  // checked_at is stamped from the poller's own client clock
+  // (lib/verification/pollRunner.ts), while vendors.created_at is Postgres's
+  // server-side `now()` — a check can never reference a vendor that doesn't
+  // exist yet, so any apparent negative duration here is pure clock skew
+  // between those two clocks, never a real ordering bug. Clamp to 0 rather
+  // than drop the sample, so a fast (near-instant) first check isn't
+  // undercounted just because the two clocks disagree by a few hundred ms.
+  const CLOCK_SKEW_TOLERANCE_MINUTES = 5;
   const minutes = input.pairs
     .filter((p): p is [string, string] => p[1] !== null)
     .map(([created, checked]) => (new Date(checked).getTime() - new Date(created).getTime()) / 60_000)
-    .filter((m) => m >= 0);
+    .filter((m) => m >= -CLOCK_SKEW_TOLERANCE_MINUTES)
+    .map((m) => Math.max(0, m));
   const sorted = [...minutes].sort((a, b) => a - b);
   const median = sorted.length === 0 ? null : sorted[Math.floor(sorted.length / 2)];
 

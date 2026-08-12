@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   computeNorthStar,
   computeVendorsConnectedWithoutIt,
+  computeTimeToFirstValue,
   computeStatusChangesDetected,
   computeAlertsActionedWithin24h,
   computeAlertPrecision,
@@ -68,6 +69,50 @@ describe("computeVendorsConnectedWithoutIt", () => {
     });
     expect(result.killSignalTriggered).toBe(false);
     expect(result.notes).toMatch(/insufficient/i);
+  });
+});
+
+describe("computeTimeToFirstValue", () => {
+  it("meets target when the first check lands within 15 minutes", () => {
+    const result = computeTimeToFirstValue({
+      pairs: [["2026-01-01T00:00:00.000Z", "2026-01-01T00:10:00.000Z"]],
+    });
+    expect(result.value).toBe(10);
+    expect(result.targetMet).toBe(true);
+  });
+
+  it("clamps a slightly-negative duration to 0 instead of dropping the sample (clock skew)", () => {
+    // checked_at (poller's client clock) landing a few hundred ms before
+    // created_at (Postgres server clock) is impossible causally — a check
+    // can't reference a vendor that doesn't exist yet — so this is clock
+    // skew, not a real ordering bug, and should count as an (effectively
+    // instant) sample, not be silently dropped.
+    const result = computeTimeToFirstValue({
+      pairs: [["2026-01-01T00:00:00.500Z", "2026-01-01T00:00:00.000Z"]],
+    });
+    expect(result.sampleSize).toBe(1);
+    expect(result.value).toBe(0);
+  });
+
+  it("drops a wildly negative duration as a real data problem, not clock skew", () => {
+    const result = computeTimeToFirstValue({
+      pairs: [["2026-01-01T00:30:00.000Z", "2026-01-01T00:00:00.000Z"]],
+    });
+    expect(result.sampleSize).toBe(0);
+    expect(result.value).toBeNull();
+  });
+
+  it("ignores a vendor with no check yet", () => {
+    const result = computeTimeToFirstValue({ pairs: [["2026-01-01T00:00:00.000Z", null]] });
+    expect(result.sampleSize).toBe(0);
+    expect(result.value).toBeNull();
+  });
+
+  it("triggers the kill signal when the median exceeds one day", () => {
+    const result = computeTimeToFirstValue({
+      pairs: [["2026-01-01T00:00:00.000Z", "2026-01-02T01:00:00.000Z"]],
+    });
+    expect(result.killSignalTriggered).toBe(true);
   });
 });
 
