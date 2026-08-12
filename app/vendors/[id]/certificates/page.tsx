@@ -5,6 +5,7 @@ import { listVendorCertificatesWithUrls } from "@/lib/certificates/queries";
 import { StatusBadge } from "../../StatusBadge";
 import type { Badge } from "@/lib/vendors/statusBadge";
 import { CertificateUploadForm } from "./CertificateUploadForm";
+import { AppNav } from "@/app/components/AppNav";
 
 /** Deterministic UTC date, e.g. "2026-08-10". */
 function fmtDate(iso: string): string {
@@ -40,68 +41,72 @@ export default async function VendorCertificatesPage(
   const certificates = await listVendorCertificatesWithUrls(supabase, vendor.id);
 
   return (
-    <div className="flex flex-1 flex-col">
-      <header className="flex items-center justify-between border-b border-black/[.08] px-6 py-4 dark:border-white/[.12]">
-        <span className="text-lg font-semibold tracking-tight text-black dark:text-zinc-50">
-          VendorPulse
-        </span>
-        <Link
-          href={`/vendors/${vendor.id}`}
-          className="text-sm text-zinc-600 underline-offset-4 hover:underline dark:text-zinc-400"
-        >
-          ← {vendor.name}
-        </Link>
-      </header>
+    <div className="flex min-h-screen flex-col bg-background">
+      <AppNav />
 
-      <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-8 p-6">
-        <section className="flex flex-col gap-1">
-          <h1 className="text-2xl font-semibold tracking-tight text-black dark:text-zinc-50">
-            Certificates — {vendor.name}
-          </h1>
-          <p className="text-zinc-600 dark:text-zinc-400">
-            Insurance and safety documents, uploaded once at onboarding. Status
-            reflects the expiry date at upload time only — there is no ongoing
-            recheck.
-          </p>
-        </section>
+      <main className="mx-auto flex w-full max-w-[1440px] flex-1 flex-col gap-stack-lg px-margin-x-mobile py-stack-lg md:px-margin-x-desktop">
+        <div className="flex flex-col gap-stack-md md:flex-row md:items-end md:justify-between">
+          <div className="flex flex-col gap-2">
+            <Link
+              href={`/vendors/${vendor.id}`}
+              className="flex w-fit items-center gap-1 font-label-md text-label-md text-secondary transition-colors hover:text-primary"
+            >
+              ← {vendor.name}
+            </Link>
+            <h1 className="font-headline-xl text-headline-lg-mobile text-on-background md:text-headline-xl">
+              Certificates — {vendor.name}
+            </h1>
+            <p className="max-w-2xl font-body-lg text-body-lg text-on-surface-variant">
+              Insurance and safety documents, uploaded once at onboarding.
+              Status reflects the expiry date at upload time only — there is
+              no ongoing recheck.
+            </p>
+          </div>
+        </div>
 
-        <section className="flex flex-col gap-3">
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+        <section className="flex flex-col gap-stack-md">
+          <h2 className="font-label-md text-label-md uppercase tracking-wider text-on-surface-variant">
             Upload a certificate
           </h2>
           <CertificateUploadForm vendorId={vendor.id} />
         </section>
 
-        <section className="flex flex-col gap-3">
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+        <section className="flex flex-col gap-stack-md">
+          <h2 className="font-label-md text-label-md uppercase tracking-wider text-on-surface-variant">
             Uploaded certificates
           </h2>
 
           {certificates.length === 0 ? (
-            <div className="rounded-md border border-dashed border-black/[.15] p-4 text-sm text-zinc-500 dark:border-white/[.18] dark:text-zinc-400">
+            <div className="rounded-xl border border-dashed border-outline-variant bg-surface-container-low p-gutter font-body-md text-body-md text-on-surface-variant">
               No certificates uploaded yet.
             </div>
           ) : (
-            <ul className="flex flex-col gap-2">
+            <ul className="ambient-shadow card-border flex flex-col divide-y divide-surface-container overflow-hidden rounded-xl bg-surface-container-lowest">
               {certificates.map((c) => (
                 <li
                   key={c.id}
-                  className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-black/[.08] px-4 py-2 text-sm dark:border-white/[.12]"
+                  className="flex flex-wrap items-center justify-between gap-stack-sm px-gutter py-stack-md transition-colors hover:bg-surface-container-low/30"
                 >
                   <div className="flex items-center gap-3">
-                    <span className="font-medium text-black dark:text-zinc-50">
+                    <span
+                      aria-hidden
+                      className="material-symbols-outlined text-primary-container"
+                    >
+                      description
+                    </span>
+                    <span className="font-label-md text-label-md text-on-surface">
                       {c.certificateType}
                     </span>
                     <StatusBadge badge={certificateBadge(c.status)} />
                   </div>
-                  <div className="flex items-center gap-3 text-xs text-zinc-500">
+                  <div className="flex items-center gap-4 font-body-sm text-body-sm text-secondary">
                     <span>Expires {fmtDate(c.expiryDate)}</span>
                     {c.url && (
                       <a
                         href={c.url}
                         target="_blank"
                         rel="noreferrer"
-                        className="font-medium text-black underline underline-offset-4 dark:text-zinc-50"
+                        className="font-label-md text-label-md text-primary-container underline underline-offset-4 hover:text-primary"
                       >
                         View
                       </a>
