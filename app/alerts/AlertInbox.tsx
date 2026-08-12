@@ -136,9 +136,13 @@ export function AlertInbox({ alerts: initialAlerts }: { alerts: AlertWithNudge[]
                   </Link>
                   <p className="text-sm text-black dark:text-zinc-50">{a.nudge.changeLine}</p>
                   <p className="text-sm text-zinc-600 dark:text-zinc-400">{a.nudge.impactLine}</p>
-                  <p className="text-sm font-medium text-black dark:text-zinc-50">
-                    {a.nudge.question}
-                  </p>
+                  {/* Only an alert still needing action asks a question — a
+                      resolved one gets its own past-tense line below instead. */}
+                  {!a.resolvedAt && (
+                    <p className="text-sm font-medium text-black dark:text-zinc-50">
+                      {a.nudge.question}
+                    </p>
+                  )}
                 </div>
 
                 {a.resolvedAt ? (

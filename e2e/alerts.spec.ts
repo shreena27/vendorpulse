@@ -129,4 +129,8 @@ test("the inbox shows the exact nudge copy, and clicking Hold updates the card i
   await expect(card.getByRole("button", { name: "Hold" })).toHaveCount(0);
   await expect(card.getByRole("button", { name: "Mark reviewed" })).toHaveCount(0);
   await expect(card.getByRole("button", { name: "Escalate" })).toHaveCount(0);
+
+  // A resolved alert no longer asks a question — that's only for alerts
+  // still needing action.
+  await expect(card.getByText("Hold them?", { exact: true })).toHaveCount(0);
 });

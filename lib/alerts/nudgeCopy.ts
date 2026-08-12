@@ -21,25 +21,28 @@ export function formatIndianCurrency(amount: number): string {
   return `₹${amount.toLocaleString("en-IN")}`;
 }
 
+// "just" lives inside each phrase (not in a shared template prefix) so it
+// lands in the right place for passive constructions — "was just cancelled",
+// not "just was cancelled".
 const GST_PHRASES: Record<string, string> = {
-  ACTIVE: "became active",
-  CANCELLED: "was cancelled",
-  INACTIVE: "went inactive",
-  SUSPENDED: "was suspended",
-  UNKNOWN: "status became unclear",
+  ACTIVE: "just became active",
+  CANCELLED: "was just cancelled",
+  INACTIVE: "just went inactive",
+  SUSPENDED: "was just suspended",
+  UNKNOWN: "just status became unclear",
 };
 
 const MSME_PHRASES: Record<string, string> = {
-  REGISTERED: "became registered",
-  LAPSED: "lapsed",
-  NOT_MSME: "is no longer classified as MSME",
-  UNKNOWN: "status became unclear",
+  REGISTERED: "just became registered",
+  LAPSED: "just lapsed",
+  NOT_MSME: "just is no longer classified as MSME",
+  UNKNOWN: "just status became unclear",
 };
 
 const LEI_PHRASES: Record<string, string> = {
-  lapsed: "lapsed",
-  retired: "was retired",
-  not_on_record: "has no LEI on record",
+  lapsed: "just lapsed",
+  retired: "was just retired",
+  not_on_record: "just has no LEI on record",
 };
 
 const REGISTRATION_LABEL: Record<TriggerType, string> = {
@@ -53,7 +56,7 @@ const REGISTRATION_LABEL: Record<TriggerType, string> = {
 export function describeStatusChange(triggerType: TriggerType, statusValue: string): string {
   const table =
     triggerType === "msme_change" ? MSME_PHRASES : triggerType === "lei_check" ? LEI_PHRASES : GST_PHRASES;
-  return table[statusValue] ?? `changed to ${statusValue}`;
+  return table[statusValue] ?? `just changed to ${statusValue}`;
 }
 
 export interface BuildNudgeMessageInput {
@@ -73,7 +76,7 @@ export interface NudgeMessage {
 export function buildNudgeMessage(input: BuildNudgeMessageInput): NudgeMessage {
   const { vendorName, triggerType, statusValue, paymentCount, paymentAmount } = input;
 
-  const changeLine = `${vendorName}'s ${REGISTRATION_LABEL[triggerType]} just ${describeStatusChange(triggerType, statusValue)}.`;
+  const changeLine = `${vendorName}'s ${REGISTRATION_LABEL[triggerType]} ${describeStatusChange(triggerType, statusValue)}.`;
 
   if (paymentCount === 0) {
     return {

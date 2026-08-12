@@ -22,38 +22,39 @@ describe("formatIndianCurrency", () => {
 });
 
 describe("describeStatusChange", () => {
-  it("phrases known GST statuses naturally", () => {
-    expect(describeStatusChange("gst_change", "ACTIVE")).toBe("became active");
-    expect(describeStatusChange("gst_change", "CANCELLED")).toBe("was cancelled");
-    expect(describeStatusChange("gst_change", "INACTIVE")).toBe("went inactive");
+  it("phrases known GST statuses naturally, with 'just' placed correctly for passive constructions", () => {
+    expect(describeStatusChange("gst_change", "ACTIVE")).toBe("just became active");
+    expect(describeStatusChange("gst_change", "CANCELLED")).toBe("was just cancelled");
+    expect(describeStatusChange("gst_change", "INACTIVE")).toBe("just went inactive");
+    expect(describeStatusChange("gst_change", "SUSPENDED")).toBe("was just suspended");
   });
 
   it("phrases known MSME statuses naturally", () => {
-    expect(describeStatusChange("msme_change", "REGISTERED")).toBe("became registered");
-    expect(describeStatusChange("msme_change", "LAPSED")).toBe("lapsed");
+    expect(describeStatusChange("msme_change", "REGISTERED")).toBe("just became registered");
+    expect(describeStatusChange("msme_change", "LAPSED")).toBe("just lapsed");
     expect(describeStatusChange("msme_change", "NOT_MSME")).toBe(
-      "is no longer classified as MSME",
+      "just is no longer classified as MSME",
     );
   });
 
   it("falls back to a generic phrase for an unmapped status value", () => {
     expect(describeStatusChange("gst_change", "SOMETHING_NEW")).toBe(
-      "changed to SOMETHING_NEW",
+      "just changed to SOMETHING_NEW",
     );
   });
 });
 
 describe("describeStatusChange for lei_check", () => {
   it("describes lapsed", () => {
-    expect(describeStatusChange("lei_check", "lapsed")).toBe("lapsed");
+    expect(describeStatusChange("lei_check", "lapsed")).toBe("just lapsed");
   });
-  it("describes retired", () => {
-    expect(describeStatusChange("lei_check", "retired")).toBe("was retired");
+  it("describes retired, with 'just' placed correctly for the passive construction", () => {
+    expect(describeStatusChange("lei_check", "retired")).toBe("was just retired");
   });
   it("describes not_on_record distinctly from lapsed", () => {
     const notOnRecord = describeStatusChange("lei_check", "not_on_record");
     const lapsed = describeStatusChange("lei_check", "lapsed");
-    expect(notOnRecord).toBe("has no LEI on record");
+    expect(notOnRecord).toBe("just has no LEI on record");
     expect(notOnRecord).not.toBe(lapsed);
   });
 });
@@ -92,6 +93,7 @@ describe("buildNudgeMessage", () => {
       paymentCount: 0,
       paymentAmount: 0,
     });
+    expect(msg.changeLine).toBe("Vendor Z's GST registration was just cancelled.");
     expect(msg.impactLine).toBe("No pending payments remain for this vendor.");
     expect(msg.question).toBe("Review?");
   });
