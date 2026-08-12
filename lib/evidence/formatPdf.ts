@@ -57,11 +57,23 @@ export async function formatExportPdf(
 
     function drawHeader(): void {
       doc.fontSize(9).font("Helvetica-Bold");
+      // Capture y ONCE before the loop. doc.text() mutates doc.y as a side
+      // effect (advances it past the text just drawn) — reading doc.y fresh
+      // on every iteration, as this used to, made each successive header
+      // drift further down than the last (a staircase, not a row). Header
+      // labels are allowed to wrap (they're fixed strings, not arbitrary
+      // vendor data), so the row's height is however tall the tallest
+      // wrapped label needs, computed up front rather than guessed.
+      const y = doc.y;
+      const headerHeight = Math.max(
+        ...columns.map((col) => doc.heightOfString(col.label, { width: col.width })),
+      );
       let x = MARGIN;
       for (const col of columns) {
-        doc.text(col.label, x, doc.y, { width: col.width, continued: false });
+        doc.text(col.label, x, y, { width: col.width, height: headerHeight, continued: false });
         x += col.width;
       }
+      doc.y = y + headerHeight;
       doc.moveDown(0.5);
       doc.font("Helvetica");
     }
@@ -89,7 +101,15 @@ export async function formatExportPdf(
         formatMsmeStatusLabel(row.msmeStatus),
       ];
       for (let i = 0; i < columns.length; i++) {
-        doc.text(cells[i], x, y, { width: columns[i].width });
+        // height + ellipsis forces a single truncated line ("…") instead of
+        // wrapping onto extra lines — a row's height is always exactly
+        // ROW_HEIGHT regardless of content length in any column, so a long
+        // vendor name can never push the following row's text out of place.
+        doc.text(cells[i], x, y, {
+          width: columns[i].width,
+          height: ROW_HEIGHT - 4,
+          ellipsis: true,
+        });
         x += columns[i].width;
       }
       doc.y = y + ROW_HEIGHT;

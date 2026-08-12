@@ -39,4 +39,24 @@ describe("formatExportPdf", () => {
     expect(Buffer.isBuffer(buf)).toBe(true);
     expect(buf.subarray(0, 5).toString("latin1")).toBe("%PDF-");
   });
+
+  // Regression: a long vendor name (or any long cell) used to wrap onto
+  // extra lines that the row's fixed advance didn't account for, so the
+  // next row's text started before the previous row's wrapped text ended —
+  // a visible overlap. Cells are now truncated to one line (ellipsis)
+  // instead, so this must still resolve cleanly regardless of row count or
+  // content length.
+  it("resolves without throwing when a cell's content is far too long for its column", async () => {
+    const rows: EvidenceExportRow[] = [
+      row({
+        paymentId: "p1",
+        vendorName: "Shree Ganesh Industrial Machinery Manufacturing and Trading Company Private Limited",
+      }),
+      row({ paymentId: "p2", vendorName: "Supercalifragilisticexpialidociousindustriesandmanufacturing" }),
+      row({ paymentId: "p3" }),
+    ];
+    const buf = await formatExportPdf(rows, RANGE);
+    expect(Buffer.isBuffer(buf)).toBe(true);
+    expect(buf.subarray(0, 5).toString("latin1")).toBe("%PDF-");
+  });
 });
