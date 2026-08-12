@@ -10,6 +10,15 @@
  * This only ever creates or updates an alert. It never blocks, holds, or
  * otherwise touches the payment itself — same as every other alert trigger
  * in this system.
+ *
+ * Bugfix (2026-08-12): every check now also writes an evidence_log
+ * `verification_check` event (payload `checkType: "lei"`), same as every
+ * GST/MSME poll does via buildCheckEvidenceEvents()/logEvents(). This was
+ * missing entirely — lei_checks got a row, but evidence_log never did — the
+ * same "check written without a matching evidence_log entry" bug class the
+ * Clause 22 export's MSME column already hit once (Vishwakarma Tooling
+ * Industries). lib/evidence/buildExport.ts's LEI Status column depends on
+ * this write existing for every check, favorable or not.
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -25,6 +34,7 @@ import {
 } from "@/lib/alerts/createOrUpdateAlert";
 import { notifyAlertCreated } from "@/lib/alerts/processChangeAlerts";
 import { track } from "@/lib/analytics/track";
+import { logEvent } from "@/lib/evidence/logEvent";
 
 export interface RunLeiCheckInput {
   paymentId: string;
@@ -47,6 +57,12 @@ export interface RecordLeiCheckInput {
 export interface RunLeiCheckDeps {
   checkLei: (leiNumber: string) => Promise<LeiCheckResult>;
   recordLeiCheck: (input: RecordLeiCheckInput) => Promise<{ id: string }>;
+  /** Writes the evidence_log row for this one check — called for every
+   * check, favorable or not, same "every check, changed or not" rule
+   * buildCheckEvidenceEvents() follows for GST/MSME. Throws on failure and
+   * lets that throw propagate, same as every other evidence_log write in
+   * this codebase (it is the audit trail, never best-effort). */
+  logCheckEvidence: (leiCheckId: string, status: LeiCheckStatus) => Promise<void>;
   createOrUpdateAlert: (input: CreateOrUpdateAlertInput) => Promise<AlertResult>;
   notifyAlertCreated: (alertId: string, organizationId: string) => Promise<void>;
   /** Chunk 5.1: same "only on creation, best-effort" contract as
@@ -87,6 +103,7 @@ export async function runLeiCheck(
     status: outcome.status,
     rawResponse: outcome.raw,
   });
+  await deps.logCheckEvidence(leiCheckId, outcome.status);
 
   if (!UNFAVORABLE.includes(outcome.status)) {
     return { ok: true, leiCheckId, status: outcome.status, alertAction: "none" };
@@ -147,6 +164,15 @@ export async function runLeiCheckForPayment(
   return runLeiCheck(input, {
     checkLei: (lei) => adapter.checkLei(lei),
     recordLeiCheck: (recordInput) => recordLeiCheck(supabase, recordInput),
+    logCheckEvidence: (leiCheckId, status) =>
+      logEvent(supabase, {
+        organizationId: input.organizationId,
+        vendorId: input.vendorId,
+        eventType: "verification_check",
+        entityType: "lei_checks",
+        entityId: leiCheckId,
+        payload: { checkType: "lei", statusValue: status, provider: "gleif" },
+      }),
     createOrUpdateAlert: (alertInput) => createOrUpdateAlert(alertsClient, alertInput),
     notifyAlertCreated: (alertId, organizationId) => notifyAlertCreated(supabase, alertId, organizationId),
     trackAlertCreated: (alertId, organizationId) =>

@@ -1,11 +1,13 @@
 /**
- * Clause 22 / Form 3CD export logic (Chunk 4.2). SERVER-ONLY.
+ * Clause 22 / Form 3CD export logic (Chunk 4.2, extended for LEI in a
+ * later bugfix). SERVER-ONLY.
  *
  * One row per payment due in the requested range, each carrying the
- * vendor's MSME registration status reconstructed AS OF that specific
- * payment's own due date — never `vendors.current_msme_status` (a live,
- * mutable value that cannot answer "what was true back then"). Sourced
- * entirely from `evidence_log`'s `verification_check` events.
+ * vendor's MSME registration status AND LEI status reconstructed AS OF
+ * that specific payment's own due date — never `vendors.current_msme_status`
+ * / a live LEI lookup (mutable values that cannot answer "what was true
+ * back then"). Sourced entirely from `evidence_log`'s `verification_check`
+ * events (payload `checkType: "msme_udyam"` / `"lei"`).
  *
  * `buildExportRows` is the hermetically-testable core (DI, same pattern as
  * `lib/alerts/impactScorer.ts`'s `scoreChange(input, deps)` vs.
@@ -20,11 +22,16 @@
  *
  * PAN is never read (DPDP exclusion, same rule CLAUDE.md states for
  * evidence_log snapshots, extended here). Alert events are out of scope —
- * only `verification_check` events for check_type = msme_udyam matter.
+ * only `verification_check` events matter for either column. LEI's
+ * "not_applicable" is gated by `qualifiesForLeiCheck` (the same ₹50cr /
+ * RTGS-NEFT threshold `lib/lei/runLeiCheck.ts` gates on) rather than a
+ * vendor-level flag — LEI status is a per-payment question, MSME status is
+ * a per-vendor one.
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, PaymentMethod, PaymentStatus } from "@/lib/supabase/types";
+import { qualifiesForLeiCheck } from "@/lib/lei/qualifiesForLeiCheck";
 
 type Client = SupabaseClient<Database>;
 
@@ -42,17 +49,22 @@ export type MsmeAsOfStatus =
   | { kind: "no_record" } // has udyam_number, but nothing checked as of that date
   | { kind: "checked"; statusValue: string; checkedAt: string }; // statusValue may itself be "UNKNOWN"
 
+export type LeiAsOfStatus =
+  | { kind: "not_applicable" } // this payment doesn't qualify for an LEI check (below ₹50cr / not RTGS-NEFT)
+  | { kind: "no_record" } // qualifies, but nothing checked as of that date
+  | { kind: "checked"; statusValue: string; checkedAt: string }; // statusValue: issued/lapsed/retired/not_on_record
+
 export interface EvidenceExportRow {
   paymentId: string;
   dueDate: string; // "YYYY-MM-DD"
   vendorId: string;
   vendorName: string;
   gstin: string | null;
-  udyamNumber: string | null; // pan is never read (DPDP)
   amount: number; // Number()'d — PostgREST returns numeric as string
   paymentMethod: PaymentMethod;
   paymentStatus: PaymentStatus;
   msmeStatus: MsmeAsOfStatus;
+  leiStatus: LeiAsOfStatus; // pan is never read (DPDP)
 }
 
 export interface BuildExportRange {
@@ -98,6 +110,35 @@ export function resolveMsmeStatusAsOf(
   return { kind: "checked", statusValue: latest.statusValue, checkedAt: latest.createdAt };
 }
 
+export interface LeiEvidenceEntry {
+  vendorId: string;
+  createdAt: string;
+  statusValue: string;
+}
+
+/** Pure "as of" reduction for ONE payment's own due_date — same shape as
+ * resolveMsmeStatusAsOf, but gated by `qualifies` (this payment's own
+ * amount/method against the ₹50cr RTGS-NEFT threshold) rather than a
+ * vendor-level identifier: LEI status is a per-payment question, not a
+ * per-vendor one, since the same vendor's other payments may not qualify. */
+export function resolveLeiStatusAsOf(
+  qualifies: boolean,
+  vendorEvidenceAscending: LeiEvidenceEntry[],
+  dueDate: string,
+): LeiAsOfStatus {
+  if (!qualifies) return { kind: "not_applicable" };
+
+  const cutoff = endOfDayIstIso(dueDate);
+  let latest: LeiEvidenceEntry | null = null;
+  for (const e of vendorEvidenceAscending) {
+    if (e.createdAt <= cutoff) {
+      latest = e;
+    }
+  }
+  if (!latest) return { kind: "no_record" };
+  return { kind: "checked", statusValue: latest.statusValue, checkedAt: latest.createdAt };
+}
+
 export interface PaymentInRange {
   id: string;
   vendorId: string;
@@ -118,6 +159,17 @@ export interface BuildExportDeps {
   fetchPaymentsInRange: (from: string, to: string) => Promise<PaymentInRange[]>;
   fetchVendorsByIds: (ids: string[]) => Promise<VendorRef[]>;
   fetchMsmeEvidence: (vendorIds: string[], cutoffIso: string) => Promise<MsmeEvidenceEntry[]>;
+  fetchLeiEvidence: (vendorIds: string[], cutoffIso: string) => Promise<LeiEvidenceEntry[]>;
+}
+
+function groupByVendor<T extends { vendorId: string }>(entries: T[]): Map<string, T[]> {
+  const byVendor = new Map<string, T[]>();
+  for (const e of entries) {
+    const list = byVendor.get(e.vendorId) ?? [];
+    list.push(e);
+    byVendor.set(e.vendorId, list);
+  }
+  return byVendor;
 }
 
 /** Hermetically testable — no Supabase type in sight. */
@@ -129,18 +181,16 @@ export async function buildExportRows(
   if (payments.length === 0) return [];
 
   const vendorIds = [...new Set(payments.map((p) => p.vendorId))];
-  const [vendors, evidence] = await Promise.all([
+  const cutoffIso = endOfDayIstIso(range.to);
+  const [vendors, msmeEvidence, leiEvidence] = await Promise.all([
     deps.fetchVendorsByIds(vendorIds),
-    deps.fetchMsmeEvidence(vendorIds, endOfDayIstIso(range.to)),
+    deps.fetchMsmeEvidence(vendorIds, cutoffIso),
+    deps.fetchLeiEvidence(vendorIds, cutoffIso),
   ]);
 
   const vendorById = new Map(vendors.map((v) => [v.id, v]));
-  const evidenceByVendor = new Map<string, MsmeEvidenceEntry[]>();
-  for (const e of evidence) {
-    const list = evidenceByVendor.get(e.vendorId) ?? [];
-    list.push(e);
-    evidenceByVendor.set(e.vendorId, list);
-  }
+  const msmeEvidenceByVendor = groupByVendor(msmeEvidence);
+  const leiEvidenceByVendor = groupByVendor(leiEvidence);
 
   return payments.map((p) => {
     const vendor = vendorById.get(p.vendorId);
@@ -150,24 +200,31 @@ export async function buildExportRows(
       vendorId: p.vendorId,
       vendorName: vendor?.name ?? "Unknown vendor",
       gstin: vendor?.gstin ?? null,
-      udyamNumber: vendor?.udyamNumber ?? null,
       amount: p.amount,
       paymentMethod: p.paymentMethod,
       paymentStatus: p.paymentStatus,
       msmeStatus: resolveMsmeStatusAsOf(
         vendor?.udyamNumber ?? null,
-        evidenceByVendor.get(p.vendorId) ?? [],
+        msmeEvidenceByVendor.get(p.vendorId) ?? [],
+        p.dueDate,
+      ),
+      leiStatus: resolveLeiStatusAsOf(
+        qualifiesForLeiCheck(p.amount, p.paymentMethod),
+        leiEvidenceByVendor.get(p.vendorId) ?? [],
         p.dueDate,
       ),
     };
   });
 }
 
-interface MsmeVerificationPayload {
+interface CheckedStatusPayload {
   statusValue: string;
 }
 
-function isMsmeVerificationPayload(payload: unknown): payload is MsmeVerificationPayload {
+/** Shared by MSME and LEI evidence fetches — both payloads carry the same
+ * `statusValue` shape (see lib/verification/changeDetector.ts's
+ * buildCheckEvidenceEvents() for GST/MSME, lib/lei/runLeiCheck.ts for LEI). */
+function isCheckedStatusPayload(payload: unknown): payload is CheckedStatusPayload {
   return (
     typeof payload === "object" &&
     payload !== null &&
@@ -226,7 +283,30 @@ async function fetchMsmeEvidence(
   if (error) throw new Error(`list msme evidence for export failed: ${error.message}`);
   const entries: MsmeEvidenceEntry[] = [];
   for (const row of data ?? []) {
-    if (!isMsmeVerificationPayload(row.payload)) continue;
+    if (!isCheckedStatusPayload(row.payload)) continue;
+    entries.push({ vendorId: row.vendor_id, createdAt: row.created_at, statusValue: row.payload.statusValue });
+  }
+  return entries;
+}
+
+async function fetchLeiEvidence(
+  supabase: Client,
+  vendorIds: string[],
+  cutoffIso: string,
+): Promise<LeiEvidenceEntry[]> {
+  if (vendorIds.length === 0) return [];
+  const { data, error } = await supabase
+    .from("evidence_log")
+    .select("vendor_id, payload, created_at")
+    .eq("event_type", "verification_check")
+    .eq("payload->>checkType", "lei")
+    .in("vendor_id", vendorIds)
+    .lte("created_at", cutoffIso)
+    .order("created_at", { ascending: true });
+  if (error) throw new Error(`list lei evidence for export failed: ${error.message}`);
+  const entries: LeiEvidenceEntry[] = [];
+  for (const row of data ?? []) {
+    if (!isCheckedStatusPayload(row.payload)) continue;
     entries.push({ vendorId: row.vendor_id, createdAt: row.created_at, statusValue: row.payload.statusValue });
   }
   return entries;
@@ -238,5 +318,6 @@ export async function buildExport(supabase: Client, range: BuildExportRange): Pr
     fetchPaymentsInRange: (from, to) => fetchPaymentsInRange(supabase, from, to),
     fetchVendorsByIds: (ids) => fetchVendorsByIds(supabase, ids),
     fetchMsmeEvidence: (vendorIds, cutoffIso) => fetchMsmeEvidence(supabase, vendorIds, cutoffIso),
+    fetchLeiEvidence: (vendorIds, cutoffIso) => fetchLeiEvidence(supabase, vendorIds, cutoffIso),
   });
 }

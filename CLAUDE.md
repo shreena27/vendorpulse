@@ -547,9 +547,37 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
   three distinct labels read correctly off the MSME Status column alone:
   `not_applicable` → "Not MSME-registered", `no_record` → "No verification
   record" (should only ever appear if `findMsmeEvidenceGaps.ts` would flag
-  that vendor), and the real reconstructed status otherwise. The same file
-  gained `formatUdyamNumberField()` so the Udyam Number column itself is
-  never left blank either — a null `udyamNumber` reads as "Not registered".
+  that vendor), and the real reconstructed status otherwise.
+- **Second bugfix (2026-08-12, same day): the Udyam Number column was
+  removed entirely** (superseding that column's short-lived
+  `formatUdyamNumberField()` blank-cell fix above, which no longer exists)
+  — MSME Status already conveys registration status on its own, so the raw
+  Udyam number was redundant for this report. **An "LEI Status (as of due
+  date)" column was added alongside MSME Status**, same point-in-time
+  reconstruction pattern: `lib/evidence/buildExport.ts` gained
+  `resolveLeiStatusAsOf()` (mirrors `resolveMsmeStatusAsOf()`, but gated by
+  `qualifiesForLeiCheck(amount, paymentMethod)` — the same ₹50cr/RTGS-NEFT
+  threshold `lib/lei/runLeiCheck.ts` gates on — since LEI status is a
+  per-*payment* question, not a per-vendor one) and `fetchLeiEvidence()`
+  (reads `evidence_log` where `payload->>checkType = 'lei'`).
+  `lib/evidence/leiStatusLabel.ts` is the new label formatter:
+  `not_applicable` → "Not applicable" (below threshold), `no_record` → "No
+  verification record", `issued` → "Valid", `lapsed` → "Lapsed", `retired`
+  → "Retired", `not_on_record` → "No LEI on record" (an unrecognized value
+  surfaces as-is, same rule as MSME's own label formatter).
+  **A real gap found and fixed while building this column, before
+  shipping** — the exact bug class this same day's MSME readability fix
+  and `findMsmeEvidenceGaps.ts` exist to catch: `lib/lei/runLeiCheck.ts`
+  wrote a `lei_checks` row on every check but had NEVER written a matching
+  `evidence_log` row, for any outcome, since Chunk 4.3 shipped — the LEI
+  Status column would have shown "No verification record" for every single
+  payment, always, not just on a missed write. Fixed at the root:
+  `runLeiCheck.ts` gained a `logCheckEvidence` dependency (payload
+  `checkType: "lei"`, `entityType: "lei_checks"`), called for every check
+  right after `recordLeiCheck`, mirroring `buildCheckEvidenceEvents()`'s
+  "every check, favorable or not" rule for GST/MSME — and, same as every
+  other evidence_log write in this codebase, it throws on failure and lets
+  that throw propagate rather than being best-effort.
   `lib/evidence/formatCsv.ts`
   emits RFC4180 CSV with a leading UTF-8 BOM (the target user opens this in
   Excel on Windows). `lib/evidence/formatPdf.ts` renders via `pdfkit`,
@@ -655,6 +683,10 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
   every other orchestrator in this codebase (`runLeiCheck(input, deps)`
   hermetic; `runLeiCheckForPayment(supabase, input)` real wiring). This
   only ever creates or updates an alert — it never touches the payment.
+  **Bugfix (2026-08-12):** this step never wrote to `evidence_log` at all
+  — see the Chunk 4.2 "LEI Status" column entry above for the full story;
+  it now also writes one `verification_check` evidence event per check via
+  a `logCheckEvidence` dependency, right after `recordLeiCheck`.
 - **The Chunk 3.1 stub is retired.** `hasUnfavorableLeiCheck` (always
   `false`) is now `hasUnfavorableLeiCheckForVendor(supabase, vendorId)`,
   written directly against the concrete client (no narrow interface — no
@@ -970,7 +1002,14 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
   not "latest always wins." Also covers `no_record`, `not_applicable`, and
   that calling `buildExport` with the caller's own session client (not
   admin) scopes to that org via RLS alone, with no manual filter in
-  `buildExport.ts` itself.
+  `buildExport.ts` itself. **Gained (2026-08-12, LEI Status column):** one
+  vendor with real MSME evidence AND real LEI evidence, two payments on the
+  same due date — a qualifying (≥₹50cr RTGS) payment resolves the real LEI
+  evidence while a non-qualifying payment on the SAME vendor with the SAME
+  evidence still shows `not_applicable` (the literal "per-payment, not
+  per-vendor" acceptance case), and MSME status is asserted unaffected on
+  the same row; plus a qualifying payment due before any LEI evidence
+  exists resolving `no_record`.
 - `lib/evidence/findMsmeEvidenceGaps.test.ts` (Vitest, hermetic) and
   `.integration.test.ts` (**live-DB**, needs migrations 0001-0009 applied)
   cover the 2026-08-12 regression check: a vendor with a udyam number and a
@@ -978,17 +1017,23 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
   vendor going through `buildCheckEvidenceEvents()`/`logEvents()` is not; a
   vendor with no udyam number, or one never checked at all, is never
   flagged (both are legitimate `no_record`, not this bug).
-- `lib/evidence/msmeStatusLabel.test.ts`, `lib/evidence/formatCsv.test.ts`
-  (Vitest, hermetic) cover the label lookup (the three distinct
-  `not_applicable`/`no_record`/checked labels from the 2026-08-12
-  readability bugfix, plus the unrecognized-value fallback),
-  `formatUdyamNumberField()`'s null → "Not registered" fallback, and CSV
-  rendering (RFC4180 quoting/escaping, null-gstin handling, the BOM,
-  two-decimal amounts).
+- `lib/evidence/msmeStatusLabel.test.ts`, `lib/evidence/leiStatusLabel.test.ts`,
+  `lib/evidence/formatCsv.test.ts` (Vitest, hermetic) cover the label
+  lookups (the three distinct `not_applicable`/`no_record`/checked labels
+  for both MSME and LEI, plus the unrecognized-value fallback on each) and
+  CSV rendering (RFC4180 quoting/escaping, null-gstin handling, the BOM,
+  two-decimal amounts, and — since the 2026-08-12 LEI Status column
+  bugfix — that all eleven fields render in order with no Udyam Number
+  column at all).
   `lib/evidence/formatPdf.test.ts` is a structural smoke test only (no
   PDF-parsing library is added): asserts a valid `%PDF-` buffer for both an
-  empty rows array and a batch covering all three `MsmeAsOfStatus` kinds,
-  without throwing.
+  empty rows array and a batch covering all three `MsmeAsOfStatus` AND all
+  three `LeiAsOfStatus` kinds, without throwing.
+  `lib/evidence/buildExport.test.ts` gained a parallel `resolveLeiStatusAsOf`
+  describe block (same boundary/ordering cases as `resolveMsmeStatusAsOf`)
+  and `buildExportRows` cases proving `leiStatus` and `msmeStatus` resolve
+  independently on the same row — a below-threshold payment can still have
+  a real, checked MSME status.
 - `e2e/evidence-export.spec.ts` covers Chunk 4.2 end to end: a CSV download
   is read off disk and asserted to contain the seeded vendor/GSTIN/due
   date/amount/MSME status label; a PDF download's filename is asserted
@@ -1030,6 +1075,15 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
   `lei_number: null` and still gets an alert; `not_on_record` and `lapsed`
   produce different DB values and different `describeStatusChange` text;
   an `other`-method payment never qualifies regardless of amount.
+  **Gained (2026-08-12 bugfix):** the lapsed-LEI scenario now also asserts
+  a matching `evidence_log` row exists (`event_type: "verification_check"`,
+  `entity_type: "lei_checks"`, `payload.checkType: "lei"`) — the literal
+  acceptance check for the missing-evidence-write bug found while adding
+  the export's LEI Status column. `runLeiCheck.test.ts` (hermetic) gained
+  cases for `logCheckEvidence`: called with the right `(leiCheckId,
+  status)` for both a favorable and unfavorable outcome, not called at all
+  below the threshold, and — unlike `notifyAlertCreated`/`trackAlertCreated`
+  — a rejection from it propagates instead of being swallowed.
 - `lib/alerts/impactScorer.test.ts` and `.integration.test.ts` gained
   cases for the real `hasUnfavorableLeiCheckForVendor` wiring: alert-worthy
   via the LEI path with no open payment at all (both hermetically, via a

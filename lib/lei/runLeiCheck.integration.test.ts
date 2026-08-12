@@ -122,6 +122,21 @@ describe.skipIf(!hasEnv)("runLeiCheck (integration)", () => {
       .eq("trigger_type", "lei_check")
       .single();
     expect(alertRow).toMatchObject({ source_check_id: result.leiCheckId, status: "open" });
+
+    // Bugfix (2026-08-12): lei_checks used to get a row while evidence_log
+    // got nothing — the same bug class Clause 22's MSME column hit. This is
+    // the literal acceptance check: the export's LEI Status column reads
+    // evidence_log exclusively, so a real check must leave a matching row.
+    const { data: evidenceRow } = await admin
+      .from("evidence_log")
+      .select("event_type, entity_type, entity_id, payload")
+      .eq("entity_type", "lei_checks")
+      .eq("entity_id", result.leiCheckId)
+      .single();
+    expect(evidenceRow).toMatchObject({
+      event_type: "verification_check",
+      payload: { checkType: "lei", statusValue: "lapsed", provider: "gleif" },
+    });
   });
 
   it("a ₹10cr payment triggers no LEI check at all (below threshold)", async () => {

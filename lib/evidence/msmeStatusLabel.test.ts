@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { formatMsmeStatusLabel, formatUdyamNumberField } from "./msmeStatusLabel";
+import { formatMsmeStatusLabel } from "./msmeStatusLabel";
 
 describe("formatMsmeStatusLabel", () => {
   it("labels not_applicable as Not MSME-registered — no Udyam number, never MSME-checkable", () => {
@@ -23,15 +23,5 @@ describe("formatMsmeStatusLabel", () => {
     expect(formatMsmeStatusLabel({ kind: "checked", statusValue: "SOMETHING_NEW", checkedAt: at })).toBe(
       "SOMETHING_NEW",
     );
-  });
-});
-
-describe("formatUdyamNumberField", () => {
-  it("passes through a real Udyam number unchanged", () => {
-    expect(formatUdyamNumberField("UDYAM-MH-01-0000001")).toBe("UDYAM-MH-01-0000001");
-  });
-
-  it("never leaves the column blank — labels a null Udyam number as Not registered", () => {
-    expect(formatUdyamNumberField(null)).toBe("Not registered");
   });
 });

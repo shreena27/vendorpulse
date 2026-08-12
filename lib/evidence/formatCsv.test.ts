@@ -3,7 +3,7 @@ import { formatExportCsv } from "./formatCsv";
 import type { EvidenceExportRow } from "./buildExport";
 
 const HEADER =
-  "Payment ID,Due Date,Vendor Name,GSTIN,Udyam Number,Amount (INR),Payment Method,Payment Status,MSME Status (as of due date),MSME Status Checked At";
+  "Payment ID,Due Date,Vendor Name,GSTIN,Amount (INR),Payment Method,Payment Status,MSME Status (as of due date),MSME Status Checked At,LEI Status (as of due date),LEI Status Checked At";
 
 function row(overrides: Partial<EvidenceExportRow> = {}): EvidenceExportRow {
   return {
@@ -12,11 +12,11 @@ function row(overrides: Partial<EvidenceExportRow> = {}): EvidenceExportRow {
     vendorId: "v1",
     vendorName: "Acme Traders",
     gstin: "27ABCDE1234F1Z5",
-    udyamNumber: "UDYAM-MH-01-0000001",
     amount: 45000,
     paymentMethod: "neft",
     paymentStatus: "pending",
     msmeStatus: { kind: "checked", statusValue: "REGISTERED", checkedAt: "2026-06-01T00:00:00.000Z" },
+    leiStatus: { kind: "not_applicable" },
     ...overrides,
   };
 }
@@ -37,11 +37,13 @@ describe("formatExportCsv", () => {
     expect(csv.charCodeAt(0)).toBe(0xfeff);
   });
 
-  it("renders all ten fields in order for one full row", () => {
-    const csv = formatExportCsv([row()]);
+  it("renders all eleven fields in order for one full row, no Udyam Number column", () => {
+    const csv = formatExportCsv([
+      row({ leiStatus: { kind: "checked", statusValue: "issued", checkedAt: "2026-06-02T00:00:00.000Z" } }),
+    ]);
     const [, dataLine] = lines(csv);
     expect(dataLine).toBe(
-      'pay-1,2026-06-15,Acme Traders,27ABCDE1234F1Z5,UDYAM-MH-01-0000001,45000.00,neft,pending,Registered,2026-06-01T00:00:00.000Z',
+      "pay-1,2026-06-15,Acme Traders,27ABCDE1234F1Z5,45000.00,neft,pending,Registered,2026-06-01T00:00:00.000Z,Valid,2026-06-02T00:00:00.000Z",
     );
   });
 
@@ -64,23 +66,35 @@ describe("formatExportCsv", () => {
     expect(dataLine.split(",")[3]).toBe("");
   });
 
-  it("never leaves the Udyam Number column blank — a null udyamNumber reads as 'Not registered'", () => {
-    const csv = formatExportCsv([row({ udyamNumber: null })]);
-    const [, dataLine] = lines(csv);
-    expect(dataLine).not.toContain("null");
-    expect(dataLine.split(",")[4]).toBe("Not registered");
-  });
-
-  it("renders not_applicable and no_record with distinct, self-explanatory labels and an empty checkedAt column", () => {
-    const naCsv = formatExportCsv([row({ msmeStatus: { kind: "not_applicable" }, udyamNumber: null })]);
+  it("renders MSME not_applicable and no_record with distinct, self-explanatory labels and an empty checkedAt column", () => {
+    const naCsv = formatExportCsv([row({ msmeStatus: { kind: "not_applicable" } })]);
     const naFields = lines(naCsv)[1].split(",");
-    expect(naFields[8]).toBe("Not MSME-registered");
-    expect(naFields[9]).toBe("");
+    expect(naFields[7]).toBe("Not MSME-registered");
+    expect(naFields[8]).toBe("");
 
     const nrCsv = formatExportCsv([row({ msmeStatus: { kind: "no_record" } })]);
     const nrFields = lines(nrCsv)[1].split(",");
-    expect(nrFields[8]).toBe("No verification record");
-    expect(nrFields[9]).toBe("");
+    expect(nrFields[7]).toBe("No verification record");
+    expect(nrFields[8]).toBe("");
+  });
+
+  it("renders LEI not_applicable, no_record, and checked with distinct labels and an empty checkedAt column where relevant", () => {
+    const naCsv = formatExportCsv([row({ leiStatus: { kind: "not_applicable" } })]);
+    const naFields = lines(naCsv)[1].split(",");
+    expect(naFields[9]).toBe("Not applicable");
+    expect(naFields[10]).toBe("");
+
+    const nrCsv = formatExportCsv([row({ leiStatus: { kind: "no_record" } })]);
+    const nrFields = lines(nrCsv)[1].split(",");
+    expect(nrFields[9]).toBe("No verification record");
+    expect(nrFields[10]).toBe("");
+
+    const lapsedCsv = formatExportCsv([
+      row({ leiStatus: { kind: "checked", statusValue: "lapsed", checkedAt: "2026-08-12T00:00:00.000Z" } }),
+    ]);
+    const lapsedFields = lines(lapsedCsv)[1].split(",");
+    expect(lapsedFields[9]).toBe("Lapsed");
+    expect(lapsedFields[10]).toBe("2026-08-12T00:00:00.000Z");
   });
 
   it("renders whole-number amounts with two decimal places", () => {

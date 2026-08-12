@@ -9,11 +9,17 @@
  *
  * pdfkit has no auto-table support, so pagination is manual (addPage() when
  * the cursor crosses the bottom margin).
+ *
+ * Columns (bugfix, readability): Due Date, Vendor, GSTIN, Amount (INR),
+ * Payment Status, MSME Status (as of due date), LEI Status (as of due
+ * date) — no Udyam Number column; MSME Status already conveys registration
+ * status on its own.
  */
 
 import PDFDocument from "pdfkit";
 import type { EvidenceExportRow } from "./buildExport";
-import { formatMsmeStatusLabel, formatUdyamNumberField } from "./msmeStatusLabel";
+import { formatMsmeStatusLabel } from "./msmeStatusLabel";
+import { formatLeiStatusLabel } from "./leiStatusLabel";
 
 export interface PdfExportRange {
   from: string;
@@ -49,10 +55,10 @@ export async function formatExportPdf(
       { label: "Due Date", width: 70 },
       { label: "Vendor", width: 160 },
       { label: "GSTIN", width: 100 },
-      { label: "Udyam Number", width: 130 },
       { label: "Amount (INR)", width: 90 },
       { label: "Payment Status", width: 90 },
-      { label: "MSME Status (as of due date)", width: 130 },
+      { label: "MSME Status (as of due date)", width: 115 },
+      { label: "LEI Status (as of due date)", width: 115 },
     ];
 
     function drawHeader(): void {
@@ -95,10 +101,10 @@ export async function formatExportPdf(
         row.dueDate,
         row.vendorName,
         row.gstin ?? "",
-        formatUdyamNumberField(row.udyamNumber),
         row.amount.toFixed(2),
         row.paymentStatus,
         formatMsmeStatusLabel(row.msmeStatus),
+        formatLeiStatusLabel(row.leiStatus),
       ];
       for (let i = 0; i < columns.length; i++) {
         // height + ellipsis forces a single truncated line ("…") instead of

@@ -11,11 +11,11 @@ function row(overrides: Partial<EvidenceExportRow> = {}): EvidenceExportRow {
     vendorId: "v1",
     vendorName: "Acme Traders",
     gstin: "27ABCDE1234F1Z5",
-    udyamNumber: "UDYAM-MH-01-0000001",
     amount: 45000,
     paymentMethod: "neft",
     paymentStatus: "pending",
     msmeStatus: { kind: "checked", statusValue: "REGISTERED", checkedAt: "2026-06-01T00:00:00.000Z" },
+    leiStatus: { kind: "not_applicable" },
     ...overrides,
   };
 }
@@ -29,11 +29,15 @@ describe("formatExportPdf", () => {
     expect(buf.subarray(0, 5).toString("latin1")).toBe("%PDF-");
   });
 
-  it("resolves a valid PDF buffer covering all three MsmeAsOfStatus kinds, without throwing", async () => {
+  it("resolves a valid PDF buffer covering all three MsmeAsOfStatus and LeiAsOfStatus kinds, without throwing", async () => {
     const rows: EvidenceExportRow[] = [
-      row({ paymentId: "p1", msmeStatus: { kind: "checked", statusValue: "REGISTERED", checkedAt: "2026-06-01T00:00:00.000Z" } }),
-      row({ paymentId: "p2", msmeStatus: { kind: "no_record" }, udyamNumber: "UDYAM-MH-01-0000002" }),
-      row({ paymentId: "p3", msmeStatus: { kind: "not_applicable" }, udyamNumber: null }),
+      row({
+        paymentId: "p1",
+        msmeStatus: { kind: "checked", statusValue: "REGISTERED", checkedAt: "2026-06-01T00:00:00.000Z" },
+        leiStatus: { kind: "checked", statusValue: "lapsed", checkedAt: "2026-08-12T00:00:00.000Z" },
+      }),
+      row({ paymentId: "p2", msmeStatus: { kind: "no_record" }, leiStatus: { kind: "no_record" } }),
+      row({ paymentId: "p3", msmeStatus: { kind: "not_applicable" }, leiStatus: { kind: "not_applicable" } }),
     ];
     const buf = await formatExportPdf(rows, RANGE);
     expect(Buffer.isBuffer(buf)).toBe(true);

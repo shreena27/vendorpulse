@@ -1,22 +1,28 @@
 /**
- * CSV rendering for the Clause 22 / Form 3CD export (Chunk 4.2). Pure —
- * takes buildExport's rows, no I/O.
+ * CSV rendering for the Clause 22 / Form 3CD export (Chunk 4.2, extended
+ * for LEI in a later bugfix). Pure — takes buildExport's rows, no I/O.
+ *
+ * No Udyam Number column: MSME Status (as of due date) already conveys
+ * registration status, so the raw Udyam number is redundant for this
+ * report and was removed.
  */
 
 import type { EvidenceExportRow } from "./buildExport";
-import { formatMsmeStatusLabel, formatUdyamNumberField } from "./msmeStatusLabel";
+import { formatMsmeStatusLabel } from "./msmeStatusLabel";
+import { formatLeiStatusLabel } from "./leiStatusLabel";
 
 const HEADER = [
   "Payment ID",
   "Due Date",
   "Vendor Name",
   "GSTIN",
-  "Udyam Number",
   "Amount (INR)",
   "Payment Method",
   "Payment Status",
   "MSME Status (as of due date)",
   "MSME Status Checked At",
+  "LEI Status (as of due date)",
+  "LEI Status Checked At",
 ];
 
 // RFC4180: wrap in quotes and double any embedded quote when a field
@@ -29,18 +35,20 @@ function csvField(value: string): string {
 }
 
 function toRowFields(row: EvidenceExportRow): string[] {
-  const checkedAt = row.msmeStatus.kind === "checked" ? row.msmeStatus.checkedAt : "";
+  const msmeCheckedAt = row.msmeStatus.kind === "checked" ? row.msmeStatus.checkedAt : "";
+  const leiCheckedAt = row.leiStatus.kind === "checked" ? row.leiStatus.checkedAt : "";
   return [
     row.paymentId,
     row.dueDate,
     row.vendorName,
     row.gstin ?? "",
-    formatUdyamNumberField(row.udyamNumber),
     row.amount.toFixed(2),
     row.paymentMethod,
     row.paymentStatus,
     formatMsmeStatusLabel(row.msmeStatus),
-    checkedAt,
+    msmeCheckedAt,
+    formatLeiStatusLabel(row.leiStatus),
+    leiCheckedAt,
   ];
 }
 

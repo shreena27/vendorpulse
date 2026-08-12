@@ -36,9 +36,3 @@ export function formatMsmeStatusLabel(status: MsmeAsOfStatus): string {
       return STATUS_VALUE_LABELS[status.statusValue] ?? status.statusValue;
   }
 }
-
-/** The Udyam Number column must never be left blank — an auditor should
- * never have to infer "no Udyam number" from an empty cell. */
-export function formatUdyamNumberField(udyamNumber: string | null): string {
-  return udyamNumber ?? "Not registered";
-}

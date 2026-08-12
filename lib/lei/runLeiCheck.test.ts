@@ -35,6 +35,7 @@ function deps(
   return {
     checkLei: vi.fn().mockResolvedValue(opts.checkResult ?? leiResult()),
     recordLeiCheck: vi.fn().mockResolvedValue({ id: "lei-check-1" }),
+    logCheckEvidence: vi.fn().mockResolvedValue(undefined),
     createOrUpdateAlert: vi.fn().mockResolvedValue({ alertId: "alert-1", action: opts.alertAction ?? "created" }),
     notifyAlertCreated: vi.fn().mockResolvedValue(undefined),
     trackAlertCreated: vi.fn().mockResolvedValue(undefined),
@@ -48,6 +49,17 @@ describe("runLeiCheck", () => {
     expect(result).toEqual({ ok: false, reason: "below_threshold" });
     expect(d.checkLei).not.toHaveBeenCalled();
     expect(d.recordLeiCheck).not.toHaveBeenCalled();
+    expect(d.logCheckEvidence).not.toHaveBeenCalled();
+  });
+
+  it("writes evidence for every check, favorable or not — the export's LEI Status column depends on this", async () => {
+    const favorable = deps({ checkResult: leiResult({ status: "issued" }) });
+    await runLeiCheck(input(), favorable);
+    expect(favorable.logCheckEvidence).toHaveBeenCalledWith("lei-check-1", "issued");
+
+    const unfavorable = deps({ checkResult: leiResult({ status: "lapsed" }) });
+    await runLeiCheck(input(), unfavorable);
+    expect(unfavorable.logCheckEvidence).toHaveBeenCalledWith("lei-check-1", "lapsed");
   });
 
   it("does nothing for a qualifying amount on 'other' payment method", async () => {
@@ -86,6 +98,7 @@ describe("runLeiCheck", () => {
     expect(d.recordLeiCheck).toHaveBeenCalledWith(
       expect.objectContaining({ status: "not_on_record", leiNumber: null }),
     );
+    expect(d.logCheckEvidence).toHaveBeenCalledWith("lei-check-1", "not_on_record");
     expect(d.createOrUpdateAlert).toHaveBeenCalled(); // not_on_record is still alert-worthy
     if (result.ok) expect(result.status).toBe("not_on_record");
   });
@@ -130,5 +143,11 @@ describe("runLeiCheck", () => {
     d.trackAlertCreated = vi.fn().mockRejectedValue(new Error("tracking down"));
     const result = await runLeiCheck(input(), d);
     expect(result.ok).toBe(true);
+  });
+
+  it("lets a failed evidence write propagate — unlike notifications/tracking, this is never best-effort", async () => {
+    const d = deps();
+    d.logCheckEvidence = vi.fn().mockRejectedValue(new Error("evidence log write failed"));
+    await expect(runLeiCheck(input(), d)).rejects.toThrow("evidence log write failed");
   });
 });

@@ -75,14 +75,33 @@ describe.skipIf(!hasEnv)("buildExport (integration)", () => {
     expect(error, error?.message).toBeNull();
   }
 
-  async function seedPayment(org: string, vendorId: string, dueDate: string, amount = "10000") {
+  async function seedPayment(
+    org: string,
+    vendorId: string,
+    dueDate: string,
+    amount = "10000",
+    paymentMethod: "rtgs" | "neft" | "other" = "neft",
+  ) {
     const { data, error } = await admin
       .from("payments")
-      .insert({ organization_id: org, vendor_id: vendorId, amount, due_date: dueDate, payment_method: "neft", status: "pending" })
+      .insert({ organization_id: org, vendor_id: vendorId, amount, due_date: dueDate, payment_method: paymentMethod, status: "pending" })
       .select("id")
       .single();
     expect(error, error?.message).toBeNull();
     return data!.id as string;
+  }
+
+  async function seedLeiEvidence(org: string, vendorId: string, statusValue: string, createdAt: string) {
+    const { error } = await admin.from("evidence_log").insert({
+      organization_id: org,
+      vendor_id: vendorId,
+      event_type: "verification_check",
+      entity_type: "lei_checks",
+      entity_id: vendorId, // no FK on entity_id, so any uuid is valid here
+      payload: { checkType: "lei", statusValue, provider: "gleif" },
+      created_at: createdAt,
+    });
+    expect(error, error?.message).toBeNull();
   }
 
   const orgIds: string[] = [];
@@ -186,5 +205,43 @@ describe.skipIf(!hasEnv)("buildExport (integration)", () => {
     const rows = await buildExport(user, { from: "2024-05-01", to: "2024-05-31" });
     expect(rows.map((r) => r.paymentId)).toContain(paymentA);
     expect(rows.every((r) => r.vendorId === vendorA)).toBe(true);
+  });
+
+  it("resolves LEI status per-payment, gated by that payment's own qualifying threshold — independent of MSME status", async () => {
+    const vendorId = await seedVendor(orgId, "LEI Column Vendor", "UDYAM-MH-01-1000005");
+    await seedEvidence(orgId, vendorId, "REGISTERED", "2024-07-01T00:00:00.000Z");
+    await seedLeiEvidence(orgId, vendorId, "lapsed", "2024-07-05T00:00:00.000Z");
+
+    // Qualifies (>=₹50cr, RTGS): resolves the real LEI evidence.
+    const qualifyingPaymentId = await seedPayment(orgId, vendorId, "2024-07-20", "600000000", "rtgs");
+    // Same vendor, same evidence, but this payment is below the threshold:
+    // must show not_applicable regardless of the LEI evidence that exists.
+    const nonQualifyingPaymentId = await seedPayment(orgId, vendorId, "2024-07-20", "10000", "neft");
+
+    const rows = await buildExport(admin, { from: "2024-07-01", to: "2024-07-31" });
+
+    const qualifyingRow = rows.find((r) => r.paymentId === qualifyingPaymentId);
+    expect(qualifyingRow).toBeDefined();
+    expect(qualifyingRow!.leiStatus.kind).toBe("checked");
+    if (qualifyingRow!.leiStatus.kind === "checked") {
+      expect(qualifyingRow!.leiStatus.statusValue).toBe("lapsed");
+    }
+    // MSME status is unaffected by any of this — a genuinely separate column.
+    expect(qualifyingRow!.msmeStatus).toMatchObject({ statusValue: "REGISTERED" });
+
+    const nonQualifyingRow = rows.find((r) => r.paymentId === nonQualifyingPaymentId);
+    expect(nonQualifyingRow).toBeDefined();
+    expect(nonQualifyingRow!.leiStatus).toEqual({ kind: "not_applicable" });
+  });
+
+  it("returns no_record for a qualifying payment due before any LEI evidence exists", async () => {
+    const vendorId = await seedVendor(orgId, "LEI No Record Vendor", "UDYAM-MH-01-1000006");
+    await seedLeiEvidence(orgId, vendorId, "issued", "2024-08-15T00:00:00.000Z");
+    const paymentId = await seedPayment(orgId, vendorId, "2024-08-01", "600000000", "rtgs");
+
+    const rows = await buildExport(admin, { from: "2024-08-01", to: "2024-08-31" });
+    const row = rows.find((r) => r.paymentId === paymentId);
+    expect(row).toBeDefined();
+    expect(row!.leiStatus).toEqual({ kind: "no_record" });
   });
 });
