@@ -1,23 +1,30 @@
 /**
  * One-off demo seed script. NOT part of the app — run by hand, once, before
- * a demo. Seeds 4 realistic vendors into the organization of whichever
+ * a demo. Seeds 6 realistic vendors into the organization of whichever
  * signed-up account you pass by email, using the same approach the
  * integration tests use: a service-role client doing direct inserts that
  * match the real schema (vendors, verification_checks with is_change,
  * payments, bank_verifications), then calling the REAL alert-creation
- * pipeline (lib/alerts/processChangeAlerts.ts's
- * processChangeAlertsForPipeline) so the resulting alert is produced by the
- * actual business logic — never inserted directly into `alerts`.
+ * pipeline for each of the three alert trigger types this app has —
+ * lib/alerts/processChangeAlerts.ts's processChangeAlertsForPipeline for
+ * GST/MSME changes, lib/lei/runLeiCheck.ts's runLeiCheckForPayment for LEI —
+ * so every resulting alert is produced by the actual business logic, never
+ * inserted directly into `alerts`.
  *
  * Bank status varies across all three real statuses so the demo isn't
  * uniformly "Unverified": Saraswati Engineering Works is verified,
- * Himalayan Herbal Products Pvt Ltd is manual_review, and Konkan Coast
- * Seafood Exports / Rajputana Steel Fabricators stay at the default
- * unverified.
+ * Himalayan Herbal Products Pvt Ltd is manual_review, and every other
+ * vendor stays at the default unverified.
+ *
+ * Three vendors demonstrate the three real alert trigger types, one each:
+ * Rajputana Steel Fabricators (gst_change), Vishwakarma Tooling Industries
+ * (msme_change), Meenakshi Infrastructure Projects Ltd (lei_check, via the
+ * real free GLEIF API against the same known-lapsed fixture LEI
+ * lib/lei/runLeiCheck.integration.test.ts uses).
  *
  * Idempotent: re-running it first deletes any previously-seeded vendors
  * with these exact demo names in the target org (vendor_id FKs cascade, so
- * their checks/payments/alerts/bank_verifications/evidence_log/
+ * their checks/payments/alerts/bank_verifications/lei_checks/evidence_log/
  * product_events rows go with them), so you can safely re-run it while
  * rehearsing.
  *
@@ -30,6 +37,7 @@ import { fileURLToPath } from "node:url";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "../lib/supabase/types";
 import { processChangeAlertsForPipeline } from "../lib/alerts/processChangeAlerts";
+import { runLeiCheckForPayment } from "../lib/lei/runLeiCheck";
 
 // Load .env.local into process.env — this script runs as a separate Node
 // process (via tsx), same pattern lib/**/*.integration.test.ts already uses.
@@ -51,7 +59,14 @@ const DEMO_VENDOR_NAMES = [
   "Konkan Coast Seafood Exports",
   "Himalayan Herbal Products Pvt Ltd",
   "Rajputana Steel Fabricators",
+  "Vishwakarma Tooling Industries",
+  "Meenakshi Infrastructure Projects Ltd",
 ] as const;
+
+// Same known-lapsed fixture LEI used by lib/lei/runLeiCheck.integration.test.ts
+// and e2e/lei-check.spec.ts — confirmed live against the real GLEIF API
+// during Chunk 4.3 planning, not guessed.
+const KNOWN_LAPSED_LEI = "335800CO2E555Q1ZEY28";
 
 function todayPlusDays(days: number): string {
   const d = new Date();
@@ -322,7 +337,7 @@ async function main() {
 
   if (alertRow) {
     console.log(
-      `✓ Real alert created — id=${alertRow.id}, trigger=${alertRow.trigger_type}, ` +
+      `✓ Real alert created (gst_change) — id=${alertRow.id}, trigger=${alertRow.trigger_type}, ` +
         `impact=₹${alertRow.payment_impact_amount}, status=${alertRow.status}`,
     );
   } else {
@@ -333,7 +348,174 @@ async function main() {
     process.exit(1);
   }
 
-  console.log("\nDone. Sign in as", email, "and open /vendors and /alerts to see the demo data.");
+  // --- 1 vendor with an MSME change + a pending payment tied to it -----
+  // Same pattern as Rajputana above, but for the msme_change trigger type —
+  // proves the impact scorer's rule works identically for either check_type.
+  const { data: msmeAlertVendor, error: msmeAlertVendorErr } = await admin
+    .from("vendors")
+    .insert({
+      organization_id: orgId,
+      name: "Vishwakarma Tooling Industries",
+      gstin: "24VTIPL7788Q1Z6",
+      udyam_number: "UDYAM-GJ-02-0056142",
+      current_msme_status: "registered", // baseline, updated below after the "change"
+      source: "excel",
+    })
+    .select("id")
+    .single();
+  if (msmeAlertVendorErr || !msmeAlertVendor) {
+    throw new Error(`MSME alert vendor insert failed: ${msmeAlertVendorErr?.message}`);
+  }
+  const msmeAlertVendorId = msmeAlertVendor.id;
+
+  const msmeBaselineCheckedAt = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(); // yesterday
+  const { error: msmeBaselineErr } = await admin.from("verification_checks").insert({
+    organization_id: orgId,
+    vendor_id: msmeAlertVendorId,
+    check_type: "msme_udyam",
+    status_value: "REGISTERED",
+    provider: "mock",
+    is_change: false,
+    checked_at: msmeBaselineCheckedAt,
+  });
+  if (msmeBaselineErr) throw new Error(`MSME baseline check insert failed: ${msmeBaselineErr.message}`);
+
+  // The "detected today" change — this is the row the real pipeline scores.
+  const { data: msmeChangeCheck, error: msmeChangeErr } = await admin
+    .from("verification_checks")
+    .insert({
+      organization_id: orgId,
+      vendor_id: msmeAlertVendorId,
+      check_type: "msme_udyam",
+      status_value: "LAPSED",
+      provider: "mock",
+      is_change: true,
+    })
+    .select("id")
+    .single();
+  if (msmeChangeErr || !msmeChangeCheck) {
+    throw new Error(`MSME change check insert failed: ${msmeChangeErr?.message}`);
+  }
+
+  const { error: msmeStatusUpdateErr } = await admin
+    .from("vendors")
+    .update({ current_msme_status: "lapsed" })
+    .eq("id", msmeAlertVendorId);
+  if (msmeStatusUpdateErr) throw new Error(`MSME vendor status update failed: ${msmeStatusUpdateErr.message}`);
+
+  const { error: msmePaymentErr } = await admin.from("payments").insert({
+    organization_id: orgId,
+    vendor_id: msmeAlertVendorId,
+    amount: "925000", // ₹9.25L
+    due_date: todayPlusDays(25),
+    payment_method: "neft",
+    status: "pending",
+  });
+  if (msmePaymentErr) throw new Error(`MSME payment insert failed: ${msmePaymentErr.message}`);
+  console.log("Seeded Vishwakarma Tooling Industries: MSME REGISTERED → LAPSED, one ₹9.25L pending payment");
+
+  const msmeSummary = await processChangeAlertsForPipeline(admin, [
+    {
+      id: msmeChangeCheck.id,
+      vendorId: msmeAlertVendorId,
+      organizationId: orgId,
+      checkType: "msme_udyam",
+    },
+  ]);
+  console.log("Alert pipeline result:", msmeSummary);
+
+  const { data: msmeAlertRow } = await admin
+    .from("alerts")
+    .select("id, status, payment_impact_amount, trigger_type")
+    .eq("vendor_id", msmeAlertVendorId)
+    .maybeSingle();
+
+  if (msmeAlertRow) {
+    console.log(
+      `✓ Real alert created (msme_change) — id=${msmeAlertRow.id}, trigger=${msmeAlertRow.trigger_type}, ` +
+        `impact=₹${msmeAlertRow.payment_impact_amount}, status=${msmeAlertRow.status}`,
+    );
+  } else {
+    console.error(
+      "✗ No MSME alert row was created. Check the pipeline summary above — " +
+        "notAlertWorthy should be 0 and alertsCreated should be 1.",
+    );
+    process.exit(1);
+  }
+
+  // --- 1 vendor with a lapsed LEI + a qualifying (>=₹50cr RTGS/NEFT) ------
+  // payment — the third and last real alert trigger type. Uses the real
+  // LEI check orchestrator (not processChangeAlertsForPipeline — LEI checks
+  // run on-demand against a payment, not from a poller-detected change),
+  // which hits the real, free GLEIF API against KNOWN_LAPSED_LEI, same
+  // fixture e2e/lei-check.spec.ts and the integration test use.
+  const { data: leiAlertVendor, error: leiAlertVendorErr } = await admin
+    .from("vendors")
+    .insert({
+      organization_id: orgId,
+      name: "Meenakshi Infrastructure Projects Ltd",
+      gstin: "27MIPLT4567P1Z3",
+      lei_number: KNOWN_LAPSED_LEI,
+      source: "excel",
+    })
+    .select("id")
+    .single();
+  if (leiAlertVendorErr || !leiAlertVendor) {
+    throw new Error(`LEI alert vendor insert failed: ${leiAlertVendorErr?.message}`);
+  }
+  const leiAlertVendorId = leiAlertVendor.id;
+
+  const { data: leiPayment, error: leiPaymentErr } = await admin
+    .from("payments")
+    .insert({
+      organization_id: orgId,
+      vendor_id: leiAlertVendorId,
+      amount: "620000000", // ₹62cr — qualifies (>= ₹50cr threshold, RTGS)
+      due_date: todayPlusDays(20),
+      payment_method: "rtgs",
+      status: "pending",
+    })
+    .select("id")
+    .single();
+  if (leiPaymentErr || !leiPayment) throw new Error(`LEI payment insert failed: ${leiPaymentErr?.message}`);
+  console.log(
+    "Seeded Meenakshi Infrastructure Projects Ltd: lapsed LEI on file, one ₹62Cr qualifying RTGS payment",
+  );
+
+  const leiResult = await runLeiCheckForPayment(admin, {
+    paymentId: leiPayment.id,
+    organizationId: orgId,
+    vendorId: leiAlertVendorId,
+    vendorLeiNumber: KNOWN_LAPSED_LEI,
+    amount: 620000000,
+    paymentMethod: "rtgs",
+  });
+  console.log("LEI check result:", leiResult);
+
+  if (leiResult.ok && leiResult.alertAction !== "none") {
+    const { data: leiAlertRow } = await admin
+      .from("alerts")
+      .select("id, status, payment_impact_amount, trigger_type")
+      .eq("vendor_id", leiAlertVendorId)
+      .maybeSingle();
+    console.log(
+      `✓ Real alert created (lei_check) — id=${leiAlertRow?.id}, trigger=${leiAlertRow?.trigger_type}, ` +
+        `status=${leiResult.status}, alertAction=${leiResult.alertAction}`,
+    );
+  } else {
+    console.error(
+      "✗ No LEI alert was created. Check leiResult above — ok should be true and status should be " +
+        "lapsed/retired/not_on_record.",
+    );
+    process.exit(1);
+  }
+
+  console.log(
+    "\nDone. Sign in as",
+    email,
+    "and open /vendors and /alerts — you should see all three alert types " +
+      "(gst_change, msme_change, lei_check) together.",
+  );
 }
 
 main().catch((err) => {
@@ -356,11 +538,13 @@ main().catch((err) => {
  *    (or directly: npx tsx scripts/seed-demo-data.ts your-login-email@example.com)
  *
  * 4. Log in as that account and open /vendors and /alerts — you should see
- *    4 vendors (3 healthy, 1 with a cancelled-GST alert), one open alert
- *    for Rajputana Steel Fabricators with a real ₹18.5L payment-impact
- *    line, and a Bank column showing Verified / Manual review / Unverified
- *    across the four vendors, not one status repeated.
+ *    6 vendors (3 healthy, 3 with real open alerts — one per trigger type)
+ *    and three alert cards: Rajputana Steel Fabricators (gst_change, ₹18.5L
+ *    impact), Vishwakarma Tooling Industries (msme_change, ₹9.25L impact),
+ *    and Meenakshi Infrastructure Projects Ltd (lei_check, lapsed LEI on a
+ *    ₹62Cr payment) — plus a Bank column on /vendors showing Verified /
+ *    Manual review / Unverified, not one status repeated.
  *
- * Safe to re-run before the demo — it deletes and recreates only the 4
+ * Safe to re-run before the demo — it deletes and recreates only the 6
  * vendors it seeds (matched by name), nothing else in your org.
  */
