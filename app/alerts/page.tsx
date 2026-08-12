@@ -1,12 +1,16 @@
-import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { listAlertsForOrg } from "@/lib/alerts/queries";
+import { AppNav } from "@/app/components/AppNav";
 import { AlertInbox } from "./AlertInbox";
 
 // Alert inbox (PRD §4.5): a plain-language question per surfaced change —
 // "Hold them?" — the finance head answers with one tap. The system never
 // claims to have taken the action itself.
+//
+// AppNav already carries the Vendors/Alerts/Evidence links this page's own
+// header used to duplicate (same drop as every other Stitch-restyled page —
+// see app/vendors/page.tsx).
 export default async function AlertsPage() {
   const supabase = await createClient();
   const {
@@ -19,37 +23,19 @@ export default async function AlertsPage() {
   const alerts = await listAlertsForOrg(supabase);
 
   return (
-    <div className="flex flex-1 flex-col">
-      <header className="flex items-center justify-between border-b border-black/[.08] px-6 py-4 dark:border-white/[.12]">
-        <span className="text-lg font-semibold tracking-tight text-black dark:text-zinc-50">
-          VendorPulse
-        </span>
-        <div className="flex items-center gap-3">
-          <Link
-            href="/evidence/export"
-            className="text-sm font-medium text-zinc-600 underline-offset-4 hover:underline dark:text-zinc-400"
-          >
-            Export evidence
-          </Link>
-          <Link
-            href="/vendors"
-            className="text-sm text-zinc-600 underline-offset-4 hover:underline dark:text-zinc-400"
-          >
-            ← Vendors
-          </Link>
-        </div>
-      </header>
+    <div className="flex min-h-screen flex-col bg-background">
+      <AppNav />
 
-      <main className="flex flex-1 flex-col gap-6 p-6">
-        <section className="flex flex-col gap-1">
-          <h1 className="text-2xl font-semibold tracking-tight text-black dark:text-zinc-50">
-            Alerts
+      <main className="mx-auto flex w-full max-w-[1440px] flex-1 flex-col gap-stack-lg px-margin-x-mobile py-stack-lg md:px-margin-x-desktop">
+        <div className="flex flex-col gap-base">
+          <h1 className="font-headline-xl text-headline-lg-mobile text-on-surface md:text-headline-xl">
+            Alert Inbox
           </h1>
-          <p className="text-zinc-600 dark:text-zinc-400">
+          <p className="font-body-md text-body-md text-on-surface-variant">
             Changes that hit a vendor with a payment in flight. You decide what
             happens next — nothing here happens on its own.
           </p>
-        </section>
+        </div>
 
         <AlertInbox alerts={alerts} />
       </main>

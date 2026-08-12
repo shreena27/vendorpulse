@@ -7,16 +7,29 @@ import type { AlertWithNudge } from "@/lib/alerts/queries";
 type Chip = "action" | "resolved" | "all";
 type Action = "hold" | "reviewed" | "escalate";
 
+// Exactly the 3 real filter states this app has (all/action/resolved) —
+// Stitch's reference shows a 4-tab All/Open/Held/Resolved row, but there's
+// no "Open" vs "Held" distinction in the filtering logic below, so no 4th
+// chip was added. Ordered to put "All" first, matching Stitch's own tab
+// order and this component's own default state.
 const CHIPS: { key: Chip; label: string }[] = [
+  { key: "all", label: "All" },
   { key: "action", label: "Needs action" },
   { key: "resolved", label: "Resolved" },
-  { key: "all", label: "All" },
 ];
 
 const ACTION_LABELS: Record<Action, string> = {
   hold: "Hold",
   reviewed: "Mark reviewed",
   escalate: "Escalate",
+};
+
+// Stitch styles each action button distinctly (filled/outline/outline-error).
+// Escalate borrows the error color since it's the most urgent action.
+const ACTION_STYLES: Record<Action, string> = {
+  hold: "bg-primary text-on-primary hover:bg-on-primary-fixed",
+  reviewed: "border border-outline text-on-surface hover:bg-surface-container-low",
+  escalate: "border border-error text-error hover:bg-error-container/40",
 };
 
 // Past-tense, human-agency phrasing — the finance head decided, the system
@@ -26,6 +39,17 @@ const RESOLVED_VERB_PHRASE: Record<string, string> = {
   hold: "held these payments",
   reviewed: "marked this reviewed",
   escalated: "escalated this alert",
+};
+
+// A small category pill derived from the real trigger_type field. Stitch's
+// reference also shows a "High Risk"/"Medium Risk" severity tag, but
+// AlertWithNudge has no risk-severity field anywhere in this app — there's
+// no real data to back one, so only this real, already-available
+// distinction (gst_change/msme_change/lei_check) is shown.
+const TRIGGER_LABEL: Record<AlertWithNudge["triggerType"], string> = {
+  gst_change: "GST",
+  msme_change: "MSME",
+  lei_check: "LEI",
 };
 
 function fmtDate(iso: string): string {
@@ -88,26 +112,32 @@ export function AlertInbox({ alerts: initialAlerts }: { alerts: AlertWithNudge[]
 
   if (alerts.length === 0) {
     return (
-      <p className="text-sm text-zinc-500 dark:text-zinc-400">
-        No alerts yet. They&rsquo;ll show up here when a vendor&rsquo;s status changes
-        while a payment is pending.
-      </p>
+      <div className="ambient-shadow rounded-xl border border-surface-container bg-surface-container-lowest p-gutter text-center">
+        <p className="font-body-md text-body-md text-on-surface-variant">
+          No alerts yet. They&rsquo;ll show up here when a vendor&rsquo;s status changes
+          while a payment is pending.
+        </p>
+      </div>
     );
   }
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex gap-1" role="group" aria-label="Filter alerts">
+    <div className="flex flex-col gap-stack-md">
+      <div
+        className="flex items-center gap-2 overflow-x-auto border-b border-surface-variant pb-1"
+        role="group"
+        aria-label="Filter alerts"
+      >
         {CHIPS.map((c) => (
           <button
             key={c.key}
             type="button"
             onClick={() => setChip(c.key)}
             aria-pressed={chip === c.key}
-            className={`rounded-full px-3 py-1 text-sm font-medium transition-colors ${
+            className={`whitespace-nowrap border-b-2 px-4 py-2 font-label-md text-label-md transition-colors ${
               chip === c.key
-                ? "bg-black text-white dark:bg-white dark:text-black"
-                : "border border-black/[.12] hover:bg-black/[.04] dark:border-white/[.16] dark:hover:bg-white/[.06]"
+                ? "border-primary text-primary"
+                : "border-transparent text-on-surface-variant hover:text-on-surface"
             }`}
           >
             {c.label}
@@ -116,58 +146,79 @@ export function AlertInbox({ alerts: initialAlerts }: { alerts: AlertWithNudge[]
       </div>
 
       {filtered.length === 0 ? (
-        <p className="text-sm text-zinc-500 dark:text-zinc-400">
-          No alerts match this filter.
-        </p>
+        <div className="ambient-shadow rounded-xl border border-surface-container bg-surface-container-lowest p-gutter text-center">
+          <p className="font-body-md text-body-md text-on-surface-variant">
+            No alerts match this filter.
+          </p>
+        </div>
       ) : (
-        <ul className="flex flex-col gap-3">
+        <ul className="flex flex-col gap-stack-md">
           {filtered.map((a) => (
             <li
               key={a.id}
-              className="rounded-md border border-black/[.08] p-4 dark:border-white/[.12]"
+              className={`ambient-shadow card-border relative flex flex-col gap-gutter overflow-hidden rounded-xl bg-surface-container-lowest p-gutter transition-shadow hover:shadow-[0px_10px_30px_rgba(15,23,42,0.08)] md:flex-row md:items-start ${
+                a.resolvedAt ? "opacity-90" : ""
+              }`}
             >
-              <div className="flex flex-wrap items-start justify-between gap-4">
-                <div className="flex flex-col gap-1">
+              {!a.resolvedAt && (
+                <div aria-hidden className="absolute inset-y-0 left-0 w-1 bg-primary-container" />
+              )}
+
+              <div className="flex flex-1 flex-col gap-stack-sm">
+                <div className="flex flex-wrap items-center justify-between gap-stack-sm">
                   <Link
                     href={`/vendors/${a.vendorId}`}
-                    className="w-fit font-medium text-black underline-offset-4 hover:underline dark:text-zinc-50"
+                    className="font-headline-md text-headline-md text-on-surface underline-offset-4 hover:underline"
                   >
                     {a.vendorName}
                   </Link>
-                  <p className="text-sm text-black dark:text-zinc-50">{a.nudge.changeLine}</p>
-                  <p className="text-sm text-zinc-600 dark:text-zinc-400">{a.nudge.impactLine}</p>
-                  {/* Only an alert still needing action asks a question — a
-                      resolved one gets its own past-tense line below instead. */}
-                  {!a.resolvedAt && (
-                    <p className="text-sm font-medium text-black dark:text-zinc-50">
-                      {a.nudge.question}
-                    </p>
-                  )}
+                  <span className="flex items-center gap-1 font-body-sm text-body-sm text-on-surface-variant">
+                    <span aria-hidden className="material-symbols-outlined text-[16px]">
+                      schedule
+                    </span>
+                    {fmtDate(a.createdAt)}
+                  </span>
                 </div>
 
+                <p className="font-body-md text-body-md text-on-surface">{a.nudge.changeLine}</p>
+                <p className="font-body-md text-body-md text-on-surface-variant">{a.nudge.impactLine}</p>
+                {/* Only an alert still needing action asks a question — a
+                    resolved one gets its own past-tense line below instead. */}
+                {!a.resolvedAt && (
+                  <p className="font-label-md text-label-md text-on-surface">{a.nudge.question}</p>
+                )}
+
+                <div className="mt-1 flex items-center gap-2">
+                  <span className="inline-flex items-center rounded-full bg-surface-container px-2 py-1 font-label-sm text-label-sm text-on-surface-variant">
+                    {TRIGGER_LABEL[a.triggerType]}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex w-full shrink-0 flex-row gap-stack-sm overflow-x-auto border-t border-surface-variant pt-gutter md:w-auto md:flex-col md:border-l md:border-t-0 md:pl-gutter md:pt-0">
                 {a.resolvedAt ? (
-                  <p className="text-sm text-zinc-500 dark:text-zinc-400">
+                  <p className="font-body-sm text-body-sm text-on-surface-variant">
                     {a.resolvedByName ?? "A team member"}{" "}
                     {RESOLVED_VERB_PHRASE[a.status] ?? "resolved this alert"} on{" "}
                     {fmtDate(a.resolvedAt)}.
                   </p>
                 ) : (
                   <div className="flex flex-col items-end gap-2">
-                    <div className="flex gap-2">
+                    <div className="flex flex-row gap-2 md:flex-col">
                       {(Object.keys(ACTION_LABELS) as Action[]).map((action) => (
                         <button
                           key={action}
                           type="button"
                           disabled={pendingId === a.id}
                           onClick={() => act(a.id, action)}
-                          className="rounded-full border border-black/[.12] px-3 py-1 text-sm font-medium transition-colors hover:bg-black/[.04] disabled:opacity-40 dark:border-white/[.16] dark:hover:bg-white/[.06]"
+                          className={`whitespace-nowrap rounded px-4 py-2 font-label-md text-label-md transition-colors disabled:opacity-40 ${ACTION_STYLES[action]}`}
                         >
                           {ACTION_LABELS[action]}
                         </button>
                       ))}
                     </div>
                     {errorById[a.id] && (
-                      <p role="alert" className="text-xs text-red-600 dark:text-red-400">
+                      <p role="alert" className="font-body-sm text-body-sm text-error">
                         {errorById[a.id]}
                       </p>
                     )}
