@@ -4,15 +4,22 @@
  * signed-up account you pass by email, using the same approach the
  * integration tests use: a service-role client doing direct inserts that
  * match the real schema (vendors, verification_checks with is_change,
- * payments), then calling the REAL alert-creation pipeline
- * (lib/alerts/processChangeAlerts.ts's processChangeAlertsForPipeline) so
- * the resulting alert is produced by the actual business logic — never
- * inserted directly into `alerts`.
+ * payments, bank_verifications), then calling the REAL alert-creation
+ * pipeline (lib/alerts/processChangeAlerts.ts's
+ * processChangeAlertsForPipeline) so the resulting alert is produced by the
+ * actual business logic — never inserted directly into `alerts`.
+ *
+ * Bank status varies across all three real statuses so the demo isn't
+ * uniformly "Unverified": Saraswati Engineering Works is verified,
+ * Himalayan Herbal Products Pvt Ltd is manual_review, and Konkan Coast
+ * Seafood Exports / Rajputana Steel Fabricators stay at the default
+ * unverified.
  *
  * Idempotent: re-running it first deletes any previously-seeded vendors
  * with these exact demo names in the target org (vendor_id FKs cascade, so
- * their checks/payments/alerts/evidence_log/product_events rows go with
- * them), so you can safely re-run it while rehearsing.
+ * their checks/payments/alerts/bank_verifications/evidence_log/
+ * product_events rows go with them), so you can safely re-run it while
+ * rehearsing.
  *
  * Run: see the block comment at the bottom of this file, or the chat
  * message this script was delivered with.
@@ -179,6 +186,55 @@ async function main() {
   if (healthyChecksErr) throw new Error(`healthy checks insert failed: ${healthyChecksErr.message}`);
   console.log(`Seeded 3 healthy vendors: ${DEMO_VENDOR_NAMES.slice(0, 3).join(", ")}`);
 
+  // --- Bank verification variety ----------------------------------------
+  // Bypasses the record_bank_verification() RPC (that's for a caller's own
+  // session client) and inserts directly, same as everywhere else in this
+  // script — service_role has an unrestricted grant on bank_verifications
+  // (migration 0004). Konkan and Rajputana are left at the table's default
+  // 'unverified', so the demo shows all three status types at a glance.
+  const { error: bankErr } = await admin.from("bank_verifications").insert([
+    {
+      organization_id: orgId,
+      vendor_id: saraswatiId,
+      account_number_masked: "****4821",
+      ifsc: "HDFC0001234",
+      name_match_result: "exact",
+      status: "verified",
+      provider: "mock",
+    },
+    {
+      organization_id: orgId,
+      vendor_id: himalayanId,
+      account_number_masked: "****7735",
+      ifsc: "SBIN0005678",
+      name_match_result: "partial",
+      status: "manual_review",
+      provider: "mock",
+    },
+  ]);
+  if (bankErr) throw new Error(`bank verification insert failed: ${bankErr.message}`);
+
+  // record_bank_verification() normally updates the vendor's
+  // current_bank_status in the same transaction as the insert above — do
+  // that explicitly here since this script writes bank_verifications directly.
+  const { error: bankStatusErr } = await admin
+    .from("vendors")
+    .update({ current_bank_status: "verified" })
+    .eq("id", saraswatiId);
+  if (bankStatusErr) throw new Error(`Saraswati bank status update failed: ${bankStatusErr.message}`);
+  const { error: himalayanBankStatusErr } = await admin
+    .from("vendors")
+    .update({ current_bank_status: "manual_review" })
+    .eq("id", himalayanId);
+  if (himalayanBankStatusErr) {
+    throw new Error(`Himalayan bank status update failed: ${himalayanBankStatusErr.message}`);
+  }
+  console.log(
+    "Seeded bank verifications: Saraswati Engineering Works=verified, " +
+      "Himalayan Herbal Products Pvt Ltd=manual_review " +
+      "(Konkan Coast Seafood Exports and Rajputana Steel Fabricators stay unverified)",
+  );
+
   // --- 1 vendor with a GST change + a pending payment tied to it -------
   // This is the one vendor that should trigger a real alert: the impact
   // scorer only fires when the SAME vendor has both is_change=true and an
@@ -300,8 +356,10 @@ main().catch((err) => {
  *    (or directly: npx tsx scripts/seed-demo-data.ts your-login-email@example.com)
  *
  * 4. Log in as that account and open /vendors and /alerts — you should see
- *    4 vendors (3 healthy, 1 with a cancelled-GST alert) and one open alert
- *    for Rajputana Steel Fabricators with a real ₹18.5L payment-impact line.
+ *    4 vendors (3 healthy, 1 with a cancelled-GST alert), one open alert
+ *    for Rajputana Steel Fabricators with a real ₹18.5L payment-impact
+ *    line, and a Bank column showing Verified / Manual review / Unverified
+ *    across the four vendors, not one status repeated.
  *
  * Safe to re-run before the demo — it deletes and recreates only the 4
  * vendors it seeds (matched by name), nothing else in your org.
