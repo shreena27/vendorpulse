@@ -642,6 +642,101 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
   way the cron routes bypass session-based routes entirely. A
   below-threshold payment gets `400`, not a silent no-op.
 
+**Chunk 5.1 — Metrics instrumentation: DONE.**
+- `supabase/migrations/0013_product_events.sql` creates `product_events`
+  (event log feeding every PRD Section 11 pilot metric). Deliberately the
+  **standard** RLS/GRANT pattern every table uses **except**
+  `evidence_log` — `authenticated` gets org-scoped SELECT only,
+  `service_role` gets `ALL` (not the SELECT+INSERT-only,
+  UPDATE/DELETE-revoked shape `evidence_log` uses). This is analytics, not
+  an audit trail — a bad row here can be corrected, so it isn't hardened
+  append-only.
+- `lib/analytics/track.ts` (`track`/`trackBatch`) mirrors
+  `lib/evidence/logEvent.ts`'s shape (a single flat `from().insert()`
+  `AnalyticsClient`, a plural batch function that no-ops on an empty
+  array) but has the **opposite failure contract**: evidence-log writes
+  must never silently fail (they're the audit trail); product-event
+  writes must never break a real business flow (a lost metric is a
+  shrug, a lost payment-hold is not). `track()`/`trackBatch()` catch and
+  log their own errors and never throw — every call site is a plain
+  `await track(...)`, no try/catch needed.
+- **Six existing flows each gained one or two `track()` calls at their
+  existing success points — no new orchestration, no new user-facing
+  API:** vendor import (`vendor_import_completed`, both poll cron routes
+  (`status_change_detected`, once per changed check), the GST/MSME and
+  LEI alert pipelines (`alert_created_tracked`, only on a newly-created
+  alert — mirrors `notifyAlertCreated`'s own "only on creation" rule and
+  is likewise best-effort/non-fatal), alert resolution
+  (`alert_actioned`, with `hoursSinceCreated`/`actionedWithin24h`/
+  `actionedWithin48h` computed once and reused by three different
+  metrics), bank verification and certificate upload
+  (`bank_cert_issue_caught`, only on a non-`verified`/expired result),
+  and evidence export (`evidence_export_completed`). Every route that
+  only had a session client (`vendors/import`, `vendors/:id/flag`,
+  `evidence/export`) needed a `createAdminClient()` instance for its
+  `track()` call, same pattern `alerts/:id/action` already used for its
+  `evidence_log` write — `product_events` INSERT is `service_role`-only.
+- `lib/analytics/maybeTrackPmfSurveyTrigger.ts` is a small, separate
+  piece: `shouldTriggerPmfSurvey` (pure, fires exactly once at the
+  crossing point) and `maybeTrackPmfSurveyTrigger` (real wiring — counts
+  an org's `alert_actioned` events, checks org age), called right after
+  the alert-action route records its own `alert_actioned` event. **The
+  trigger threshold (3rd actioned alert, no earlier than 14 days after
+  signup) is a first-cut product decision, not a PRD number** — the PRD
+  defines what to measure once the Sean Ellis survey is shown, not when
+  to show it.
+- `lib/analytics/metrics.ts` has one function per Section 11 metric,
+  using the real PRD targets/kill signals below. Most are **org-scoped**
+  (`getNorthStarMetric`, `getVendorsConnectedWithoutIt`,
+  `getTimeToFirstValue`, `getStatusChangesDetected`,
+  `getAlertsActionedWithin24h`, `getAlertPrecision`,
+  `getBankCertIssuesCaught`, `getAuditTimeSaved` — bundled by
+  `getSection11Metrics(supabase, organizationId)`). **Three are
+  inherently portfolio-wide** per the PRD's own wording ("most
+  customers", "% of pilot customers/users") — a single org can only
+  contribute one data point to a cross-customer percentage:
+  `getTimeToFirstValuePortfolioKillSignal` (admin client, scans every
+  org), `getPilotToPaidIntent`, `getPmfSurveyScore`. The North Star gets
+  its own explicitly-named `getNorthStarMetric()` rather than being
+  folded anonymously into the metric bundle, since it's the single most
+  important signal (payments the finance head holds herself, prompted by
+  an alert — the system never holds a payment itself).
+  | # | Metric | Target | Kill signal |
+  |---|---|---|---|
+  | ★ | North Star / #6 — payments held or rerouted | ≥1 per customer / 30 days, by her own choice | Alerts acknowledged but the payment goes out anyway, every time |
+  | 1 | Vendors connected without IT | 90%+ within 3 days of signup | <50% within 2 weeks, or IT has to get involved |
+  | 2 | Time to first value | First vendor-risk view within 15 minutes | Longer than a day for most customers |
+  | 3 | Status changes detected | ≥1 per 100 vendors / 30 days | Zero across all pilot vendors |
+  | 4 | Alerts actioned within 24h | 80%+ within 24h | <30% within 48h |
+  | 5 | Alert precision | 90%+ confirmed genuine | <60% |
+  | 7 | Bank/cert issues caught at onboarding | ≥1 per customer before first payment | Zero across all pilots |
+  | 8 | Audit prep time saved (self-reported) | 30%+ drop vs. prior year | No measurable reduction |
+  | 9 | Pilot-to-paid intent | 50%+ ask to move to paid by day 30 | <20% show any intent |
+  | 10 | "Very disappointed" without it (Sean Ellis PMF) | 40%+ | <20% |
+- **Two proxies, documented in `metrics.ts`'s own doc comment, not
+  hidden:** alert precision has no false-positive UI yet (out of scope —
+  "no new user-facing API"), so `hold`/`escalate` count as "confirmed
+  genuine" and `reviewed` alone does not. The North Star's "held or
+  rerouted" maps `escalate` to "rerouted" (routing the decision to
+  someone else) and `hold` to "held"; `reviewed` alone counts as neither.
+- **A real clock-skew bug, found by actually running the live-DB test,
+  not assumed:** `verification_checks.checked_at` is stamped from the
+  poller's own client clock (`lib/verification/pollRunner.ts`), while
+  `vendors.created_at` is Postgres's server-side `now()` — a check landing
+  a few hundred ms before the vendor's own creation timestamp is common
+  under real clock drift between the two, even though a check can never
+  actually reference a vendor that doesn't exist yet. `computeTimeToFirstValue`
+  clamps a small negative duration to `0` instead of dropping the sample
+  (a fast check shouldn't be undercounted just because two clocks
+  disagree by milliseconds); a wildly negative duration (minutes, not
+  milliseconds) still drops, since that would indicate an actual data
+  problem, not skew.
+- Metrics 2's kill signal, 9, and 10 needed no new event type beyond
+  what's already listed above; "time to first value" itself is computed
+  directly from `vendor_import_completed`'s timestamp and
+  `verification_checks` — no separate "risk view shown" UI event exists,
+  since building one was out of scope for this chunk.
+
 **Testing.**
 - Playwright e2e lives in `e2e/`. Run `npm run test:e2e`.
 - `e2e/auth.spec.ts` covers sign-up, log out, log in, the protected-route redirect, and the wrong-password inline error.
@@ -861,6 +956,51 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
   payment totals ₹60.0Cr."). The full pre-existing e2e suite (including
   `alerts.spec.ts`) was re-run alongside it to confirm the `attachNudge()`
   polymorphic-source change introduced no regression in the GST/MSME path.
+- `lib/analytics/track.test.ts` (Vitest, hermetic) covers Chunk 5.1's
+  writer: row shaping, actor/vendorId/payload defaults, the empty-batch
+  no-op, multi-event batching, and — the literal "never throws" contract
+  — both an insert-returns-an-error case and an insert-call-rejects case
+  resolving cleanly instead of throwing.
+- `lib/analytics/maybeTrackPmfSurveyTrigger.test.ts` (Vitest, hermetic)
+  covers the pure threshold: before the 3rd actioned alert, at the 3rd
+  with the 14-day minimum met, at the 3rd without the minimum met, and
+  past the 3rd (fires only once, at the crossing point).
+  `lib/alerts/processChangeAlerts.test.ts` and `lib/lei/runLeiCheck.test.ts`
+  each gained cases for the new `trackAlertCreated` dependency: called
+  once per newly-created alert (never on a dedupe update), and a failed
+  call never aborts the batch/result.
+- `lib/analytics/metrics.test.ts` (Vitest, hermetic) covers every
+  `compute*` pure reducer: the North Star's hold/escalate-as-"held or
+  rerouted" counting and its "acknowledged but never held" kill signal;
+  vendors-connected-without-IT's 3-day/2-week boundaries and the
+  insufficient-data withholding before 2 weeks; time-to-first-value's
+  target/kill-signal boundaries, the clock-skew clamp-to-zero case (a
+  small negative duration counts as a fast, ~instant sample) versus a
+  wildly-negative one (dropped as a real data problem), and the
+  no-check-yet case; status-changes-detected's per-100 rate and
+  zero-changes kill signal; alerts-actioned-within-24h's 24h/48h
+  boundaries; alert-precision's hold/escalate-vs-reviewed-alone proxy;
+  bank/cert-issues-caught's zero-vs-one boundary; and audit-time-saved's
+  average-reduction target, no-measurable-reduction kill signal, and
+  empty-reports case.
+- `lib/analytics/section11.integration.test.ts` is the chunk's core
+  **live-DB** acceptance test (needs migrations 0001-0013 applied) — the
+  literal "scripted end-to-end run, one assertion per metric" acceptance
+  criterion: runs a real import (via the signed-up user's own session
+  client — `import_vendors()` is `SECURITY DEFINER` reading
+  `current_org_id()` from the *caller's* `auth.uid()`, so it cannot run
+  on the admin client, which carries no user JWT at all; the same
+  constraint applies to `resolve_alert()` later in the same test), two
+  real polls to produce a genuine GST status change, a real
+  `processChangeAlertsForPipeline` run to create a real alert, a real
+  `resolveAlert(..., "hold")` to actually hold it, a real
+  `buildExport()` call, and three directly-`track()`ed self-reported
+  signals (audit time saved, pilot-to-paid intent, PMF response) since
+  no survey/CRM UI triggers those yet — then asserts all 8 org-scoped
+  Section 11 metrics plus the 2 portfolio-wide self-reported ones and the
+  portfolio kill-signal helper are all non-trivially queryable off the
+  real data this run produced. This test is what caught the clock-skew
+  bug documented above — found by actually running it live, not assumed.
 
 ### Operational notes
 
@@ -876,24 +1016,32 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
 ### Next chunk
 
 Phase 1, Phase 2 (onboarding-only verification: bank + certificates), Phase 3 (alerting: impact
-scorer → alert generation/dedupe → inbox UI + one-tap actions + email), and all of Phase 4
-(evidence log wiring, Clause 22 / Form 3CD export, LEI pre-payment check) are complete. A detected
-change with a payment in flight now reaches a real person's inbox, by email and in-app, they can
-resolve it with one click, every step of that cycle has a matching, physically tamper-proof
-`evidence_log` row, a finance head can export exactly what was true on any past date for every
-payment due to an MSME vendor, and a large RTGS/NEFT payment gets a pre-payment LEI check that
-alerts — never blocks — on a lapsed, retired, or missing LEI. `lib/alerts/impactScorer.ts`'s
+scorer → alert generation/dedupe → inbox UI + one-tap actions + email), Phase 4 (evidence log
+wiring, Clause 22 / Form 3CD export, LEI pre-payment check), and Chunk 5.1 (metrics instrumentation)
+are complete. A detected change with a payment in flight now reaches a real person's inbox, by email
+and in-app, they can resolve it with one click, every step of that cycle has a matching, physically
+tamper-proof `evidence_log` row, a finance head can export exactly what was true on any past date for
+every payment due to an MSME vendor, a large RTGS/NEFT payment gets a pre-payment LEI check that
+alerts — never blocks — on a lapsed, retired, or missing LEI, and every one of those flows now also
+writes a lightweight `product_events` row so all 10 PRD Section 11 pilot metrics (plus the North Star)
+are queryable against their real 30-day targets and kill signals. `lib/alerts/impactScorer.ts`'s
 `hasUnfavorableLeiCheck` stub (always `false` since Chunk 3.1) and `createOrUpdateAlert.ts`'s
 `lei_check` trigger type (defined in the CHECK constraint since Chunk 3.2, never produced until now)
-are both real. Phase 5 is next:
+are both real. Phase 5 continues:
 
 - **Revisit `POST /api/vendors/:id/flag`** (`app/api/vendors/[id]/flag/route.ts`) once certificate
   re-verification is needed — it currently handles bank re-verification only.
 - **Live adapters still stubbed, lowest priority:** `lib/providers/bank/ekoAdapter.ts`
   (`TODO(chunk-2.1-live)`) and `lib/providers/msme/deepvueAdapter.ts` — implement once sandbox
   credentials exist, verifying the live API first rather than guessing field names.
-- **Chunk 5.x (pilot rollout + metrics)** — not started: metrics instrumentation, provider rate
-  limiting, and the end-to-end verification suite (one Playwright file per PRD §8 user story).
+- **No survey/CRM UI yet for the three self-reported Section 11 metrics** (audit time saved,
+  pilot-to-paid intent, PMF response) — `lib/analytics/metrics.ts` and `product_events` are ready to
+  receive them via `track()`, but nothing in the app UI calls it yet. Wire a real form/flow when the
+  pilot needs it; until then these are submitted by hand (support conversation → a script that calls
+  `track()` directly), same as `section11.integration.test.ts` simulates.
+- **Chunk 5.2 (pilot hardening + provider rate limiting)** — not started.
+- **Chunk 5.3 (end-to-end verification suite)** — not started: one Playwright file per PRD §8 user
+  story.
 
 ### Backlog (not scheduled)
 
