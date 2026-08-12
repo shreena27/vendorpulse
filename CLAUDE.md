@@ -580,6 +580,25 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
   in `CertificateUploadForm.tsx`. "Export evidence" nav links added to
   `app/vendors/page.tsx` and `app/alerts/page.tsx`'s header `<Link>`
   clusters, matching their existing pattern.
+- **Bugfix (2026-08-12), `lib/evidence/findMsmeEvidenceGaps.ts`:**
+  `scripts/seed-demo-data.ts` (an ad-hoc demo seeder, not part of a chunk)
+  inserted `verification_checks` rows directly and never called Chunk 4.1's
+  `buildCheckEvidenceEvents()`/`logEvents()` — so Vishwakarma Tooling
+  Industries' genuine `REGISTERED → LAPSED` change never reached
+  `evidence_log`, and `buildExport.ts` (which reads `evidence_log`
+  exclusively, by design) reported "No record" for every one of its
+  payments regardless of what actually happened. Root cause fixed at the
+  source: the seed script now calls `buildCheckEvidenceEvents()` +
+  `logEvents()` after every `verification_checks` insert, exactly like the
+  cron routes do after `runPoll()`. `findMsmeEvidenceGapsForOrg()` is the
+  lasting regression check: any vendor with a non-null `udyam_number` and
+  at least one `msme_udyam` check but zero matching `evidence_log` rows is
+  exactly this bug and gets flagged — `lib/evidence
+  /findMsmeEvidenceGaps.integration.test.ts` reproduces the bug scenario
+  directly (an un-logged insert) and asserts the checker catches it, and
+  that it does not false-positive on the correct evidence-logged path or on
+  a vendor with no `udyam_number` / never checked yet (the legitimate
+  `no_record` case `buildExport.ts` already models).
 
 **Chunk 4.3 — LEI pre-payment check (GLEIF): DONE.**
 - **Confirmed integration point (asked before building, per the user's own
@@ -941,6 +960,13 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
   that calling `buildExport` with the caller's own session client (not
   admin) scopes to that org via RLS alone, with no manual filter in
   `buildExport.ts` itself.
+- `lib/evidence/findMsmeEvidenceGaps.test.ts` (Vitest, hermetic) and
+  `.integration.test.ts` (**live-DB**, needs migrations 0001-0009 applied)
+  cover the 2026-08-12 regression check: a vendor with a udyam number and a
+  directly-inserted (un-logged) `msme_udyam` check is flagged; the same
+  vendor going through `buildCheckEvidenceEvents()`/`logEvents()` is not; a
+  vendor with no udyam number, or one never checked at all, is never
+  flagged (both are legitimate `no_record`, not this bug).
 - `lib/evidence/msmeStatusLabel.test.ts`, `lib/evidence/formatCsv.test.ts`
   (Vitest, hermetic) cover the label lookup (including the
   unrecognized-value fallback) and CSV rendering (RFC4180 quoting/escaping,

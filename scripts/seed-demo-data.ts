@@ -11,6 +11,17 @@
  * so every resulting alert is produced by the actual business logic, never
  * inserted directly into `alerts`.
  *
+ * Every `verification_checks` insert is immediately followed by the same
+ * evidence_log write the real cron routes perform after runPoll() (Chunk
+ * 4.1's buildCheckEvidenceEvents() + logEvents()) — found missing here as a
+ * real bug (2026-08-12): a directly-inserted check with no matching
+ * evidence_log row is invisible to the Clause 22 / Form 3CD export
+ * (lib/evidence/buildExport.ts reads evidence_log exclusively, never
+ * verification_checks), so Vishwakarma Tooling Industries' genuine MSME
+ * Lapsed status showed as "No record" for every payment due date. Every
+ * check this script inserts now produces the same evidence trail a real
+ * poll would.
+ *
  * Bank status varies across all three real statuses so the demo isn't
  * uniformly "Unverified": Saraswati Engineering Works is verified,
  * Himalayan Herbal Products Pvt Ltd is manual_review, and every other
@@ -38,6 +49,8 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "../lib/supabase/types";
 import { processChangeAlertsForPipeline } from "../lib/alerts/processChangeAlerts";
 import { runLeiCheckForPayment } from "../lib/lei/runLeiCheck";
+import { buildCheckEvidenceEvents } from "../lib/verification/changeDetector";
+import { logEvents } from "../lib/evidence/logEvent";
 
 // Load .env.local into process.env — this script runs as a separate Node
 // process (via tsx), same pattern lib/**/*.integration.test.ts already uses.
@@ -156,49 +169,55 @@ async function main() {
   const konkanId = byName.get("Konkan Coast Seafood Exports")!;
   const himalayanId = byName.get("Himalayan Herbal Products Pvt Ltd")!;
 
-  const { error: healthyChecksErr } = await admin.from("verification_checks").insert([
-    {
-      organization_id: orgId,
-      vendor_id: saraswatiId,
-      check_type: "gst",
-      status_value: "ACTIVE",
-      provider: "mock",
-      is_change: false,
-    },
-    {
-      organization_id: orgId,
-      vendor_id: saraswatiId,
-      check_type: "msme_udyam",
-      status_value: "REGISTERED",
-      provider: "mock",
-      is_change: false,
-    },
-    {
-      organization_id: orgId,
-      vendor_id: konkanId,
-      check_type: "gst",
-      status_value: "ACTIVE",
-      provider: "mock",
-      is_change: false,
-    },
-    {
-      organization_id: orgId,
-      vendor_id: himalayanId,
-      check_type: "gst",
-      status_value: "ACTIVE",
-      provider: "mock",
-      is_change: false,
-    },
-    {
-      organization_id: orgId,
-      vendor_id: himalayanId,
-      check_type: "msme_udyam",
-      status_value: "REGISTERED",
-      provider: "mock",
-      is_change: false,
-    },
-  ]);
-  if (healthyChecksErr) throw new Error(`healthy checks insert failed: ${healthyChecksErr.message}`);
+  const { data: healthyChecks, error: healthyChecksErr } = await admin
+    .from("verification_checks")
+    .insert([
+      {
+        organization_id: orgId,
+        vendor_id: saraswatiId,
+        check_type: "gst",
+        status_value: "ACTIVE",
+        provider: "mock",
+        is_change: false,
+      },
+      {
+        organization_id: orgId,
+        vendor_id: saraswatiId,
+        check_type: "msme_udyam",
+        status_value: "REGISTERED",
+        provider: "mock",
+        is_change: false,
+      },
+      {
+        organization_id: orgId,
+        vendor_id: konkanId,
+        check_type: "gst",
+        status_value: "ACTIVE",
+        provider: "mock",
+        is_change: false,
+      },
+      {
+        organization_id: orgId,
+        vendor_id: himalayanId,
+        check_type: "gst",
+        status_value: "ACTIVE",
+        provider: "mock",
+        is_change: false,
+      },
+      {
+        organization_id: orgId,
+        vendor_id: himalayanId,
+        check_type: "msme_udyam",
+        status_value: "REGISTERED",
+        provider: "mock",
+        is_change: false,
+      },
+    ])
+    .select("id, organization_id, vendor_id, check_type, status_value, provider, is_change");
+  if (healthyChecksErr || !healthyChecks) {
+    throw new Error(`healthy checks insert failed: ${healthyChecksErr?.message}`);
+  }
+  await logEvents(admin, buildCheckEvidenceEvents(healthyChecks));
   console.log(`Seeded 3 healthy vendors: ${DEMO_VENDOR_NAMES.slice(0, 3).join(", ")}`);
 
   // --- Bank verification variety ----------------------------------------
@@ -272,16 +291,23 @@ async function main() {
   const alertVendorId = alertVendor.id;
 
   const baselineCheckedAt = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(); // yesterday
-  const { error: baselineErr } = await admin.from("verification_checks").insert({
-    organization_id: orgId,
-    vendor_id: alertVendorId,
-    check_type: "gst",
-    status_value: "ACTIVE",
-    provider: "mock",
-    is_change: false,
-    checked_at: baselineCheckedAt,
-  });
-  if (baselineErr) throw new Error(`baseline check insert failed: ${baselineErr.message}`);
+  const { data: baselineCheck, error: baselineErr } = await admin
+    .from("verification_checks")
+    .insert({
+      organization_id: orgId,
+      vendor_id: alertVendorId,
+      check_type: "gst",
+      status_value: "ACTIVE",
+      provider: "mock",
+      is_change: false,
+      checked_at: baselineCheckedAt,
+    })
+    .select("id, organization_id, vendor_id, check_type, status_value, provider, is_change")
+    .single();
+  if (baselineErr || !baselineCheck) {
+    throw new Error(`baseline check insert failed: ${baselineErr?.message}`);
+  }
+  await logEvents(admin, buildCheckEvidenceEvents([baselineCheck]));
 
   // The "detected today" change — this is the row the real pipeline scores.
   const { data: changeCheck, error: changeErr } = await admin
@@ -294,9 +320,10 @@ async function main() {
       provider: "mock",
       is_change: true,
     })
-    .select("id")
+    .select("id, organization_id, vendor_id, check_type, status_value, provider, is_change")
     .single();
   if (changeErr || !changeCheck) throw new Error(`change check insert failed: ${changeErr?.message}`);
+  await logEvents(admin, buildCheckEvidenceEvents([changeCheck]));
 
   const { error: statusUpdateErr } = await admin
     .from("vendors")
@@ -369,16 +396,23 @@ async function main() {
   const msmeAlertVendorId = msmeAlertVendor.id;
 
   const msmeBaselineCheckedAt = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(); // yesterday
-  const { error: msmeBaselineErr } = await admin.from("verification_checks").insert({
-    organization_id: orgId,
-    vendor_id: msmeAlertVendorId,
-    check_type: "msme_udyam",
-    status_value: "REGISTERED",
-    provider: "mock",
-    is_change: false,
-    checked_at: msmeBaselineCheckedAt,
-  });
-  if (msmeBaselineErr) throw new Error(`MSME baseline check insert failed: ${msmeBaselineErr.message}`);
+  const { data: msmeBaselineCheck, error: msmeBaselineErr } = await admin
+    .from("verification_checks")
+    .insert({
+      organization_id: orgId,
+      vendor_id: msmeAlertVendorId,
+      check_type: "msme_udyam",
+      status_value: "REGISTERED",
+      provider: "mock",
+      is_change: false,
+      checked_at: msmeBaselineCheckedAt,
+    })
+    .select("id, organization_id, vendor_id, check_type, status_value, provider, is_change")
+    .single();
+  if (msmeBaselineErr || !msmeBaselineCheck) {
+    throw new Error(`MSME baseline check insert failed: ${msmeBaselineErr?.message}`);
+  }
+  await logEvents(admin, buildCheckEvidenceEvents([msmeBaselineCheck]));
 
   // The "detected today" change — this is the row the real pipeline scores.
   const { data: msmeChangeCheck, error: msmeChangeErr } = await admin
@@ -391,11 +425,12 @@ async function main() {
       provider: "mock",
       is_change: true,
     })
-    .select("id")
+    .select("id, organization_id, vendor_id, check_type, status_value, provider, is_change")
     .single();
   if (msmeChangeErr || !msmeChangeCheck) {
     throw new Error(`MSME change check insert failed: ${msmeChangeErr?.message}`);
   }
+  await logEvents(admin, buildCheckEvidenceEvents([msmeChangeCheck]));
 
   const { error: msmeStatusUpdateErr } = await admin
     .from("vendors")
