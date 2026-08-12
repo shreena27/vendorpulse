@@ -1,26 +1,166 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #f7f9fb;
+  --foreground: #191c1e;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  /* Stitch design system — VendorPulse Continuous Vendor Trust Monitoring.
+   * Token names/values are lifted directly from the Stitch export's own
+   * tailwind.config (identical across every screen's code.html), so class
+   * names copied from a Stitch reference file work as real Tailwind
+   * utilities here. Light-only — the export has no designed dark variant. */
+  --color-primary: #004440;
+  --color-on-primary: #ffffff;
+  --color-primary-container: #1f5c57;
+  --color-on-primary-container: #97d2cb;
+  --color-secondary: #565e74;
+  --color-on-secondary: #ffffff;
+  --color-secondary-container: #dae2fd;
+  --color-on-secondary-container: #5c647a;
+  --color-tertiary: #6b2600;
+  --color-on-tertiary: #ffffff;
+  --color-tertiary-container: #913600;
+  --color-on-tertiary-container: #ffb698;
+  --color-error: #ba1a1a;
+  --color-on-error: #ffffff;
+  --color-error-container: #ffdad6;
+  --color-on-error-container: #93000a;
+  --color-surface: #f7f9fb;
+  --color-surface-dim: #d8dadc;
+  --color-surface-bright: #f7f9fb;
+  --color-surface-container-lowest: #ffffff;
+  --color-surface-container-low: #f2f4f6;
+  --color-surface-container: #eceef0;
+  --color-surface-container-high: #e6e8ea;
+  --color-surface-container-highest: #e0e3e5;
+  --color-surface-variant: #e0e3e5;
+  --color-on-surface: #191c1e;
+  --color-on-surface-variant: #404947;
+  --color-outline: #707977;
+  --color-outline-variant: #bfc8c6;
+
+  /* Typography: --font-* sets the typeface, --text-* sets size + line-height
+   * + tracking + weight together — the same dual-key pattern the Stitch
+   * export's own tailwind.config uses (fontFamily.headline-lg + fontSize.
+   * headline-lg), so e.g. `font-headline-lg text-headline-lg` matches every
+   * code.html reference exactly. */
+  --font-headline-xl: var(--font-manrope), sans-serif;
+  --font-headline-lg: var(--font-manrope), sans-serif;
+  --font-headline-lg-mobile: var(--font-manrope), sans-serif;
+  --font-headline-md: var(--font-manrope), sans-serif;
+  --font-body-lg: var(--font-inter), sans-serif;
+  --font-body-md: var(--font-inter), sans-serif;
+  --font-body-sm: var(--font-inter), sans-serif;
+  --font-label-md: var(--font-inter), sans-serif;
+  --font-label-sm: var(--font-inter), sans-serif;
+
+  --text-headline-xl: 36px;
+  --text-headline-xl--line-height: 44px;
+  --text-headline-xl--letter-spacing: -0.02em;
+  --text-headline-xl--font-weight: 700;
+
+  --text-headline-lg: 28px;
+  --text-headline-lg--line-height: 36px;
+  --text-headline-lg--letter-spacing: -0.01em;
+  --text-headline-lg--font-weight: 700;
+
+  --text-headline-lg-mobile: 24px;
+  --text-headline-lg-mobile--line-height: 32px;
+  --text-headline-lg-mobile--font-weight: 700;
+
+  --text-headline-md: 20px;
+  --text-headline-md--line-height: 28px;
+  --text-headline-md--font-weight: 600;
+
+  --text-body-lg: 16px;
+  --text-body-lg--line-height: 24px;
+  --text-body-lg--font-weight: 400;
+
+  --text-body-md: 14px;
+  --text-body-md--line-height: 20px;
+  --text-body-md--font-weight: 400;
+
+  --text-body-sm: 12px;
+  --text-body-sm--line-height: 18px;
+  --text-body-sm--font-weight: 400;
+
+  --text-label-md: 14px;
+  --text-label-md--line-height: 16px;
+  --text-label-md--letter-spacing: 0.05em;
+  --text-label-md--font-weight: 600;
+
+  --text-label-sm: 11px;
+  --text-label-sm--line-height: 12px;
+  --text-label-sm--letter-spacing: 0.05em;
+  --text-label-sm--font-weight: 600;
+
+  /* Spacing scale extensions. rounded-lg (0.5rem) / rounded-xl (0.75rem) /
+   * rounded-full already match Tailwind v4's built-in defaults. */
+  --spacing-base: 4px;
+  --spacing-gutter: 24px;
+  --spacing-stack-sm: 8px;
+  --spacing-stack-md: 16px;
+  --spacing-stack-lg: 32px;
+  --spacing-margin-x-mobile: 16px;
+  --spacing-margin-x-desktop: 40px;
+  --spacing-container-max: 1440px;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-inter), Arial, Helvetica, sans-serif;
+}
+
+/* Shared utility classes used across multiple Stitch reference screens. */
+.ambient-shadow {
+  box-shadow: 0px 4px 20px rgba(15, 23, 42, 0.05);
+}
+.card-border {
+  border: 1px solid #f1f5f9;
+}
+.focus-glow:focus {
+  box-shadow: 0 0 0 2px rgba(31, 92, 87, 0.2);
+  border-color: #1f5c57;
+  outline: none;
+}
+.zebra-row:nth-child(even) {
+  background-color: #f8fafc;
+}
+.table-row-h {
+  height: 48px;
+}
+.material-symbols-outlined {
+  font-variation-settings:
+    "FILL" 0,
+    "wght" 400,
+    "GRAD" 0,
+    "opsz" 24;
+}
+.material-symbols-outlined.filled {
+  font-variation-settings:
+    "FILL" 1,
+    "wght" 400,
+    "GRAD" 0,
+    "opsz" 24;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
 }
