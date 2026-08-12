@@ -10,7 +10,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:integration": "vitest run --config vitest.integration.config.mts",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "seed:demo": "tsx scripts/seed-demo-data.ts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.4",
@@ -32,6 +33,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.3.0",
     "tailwindcss": "^4",
+    "tsx": "^4.23.12",
     "typescript": "^5",
     "vitest": "^4.1.10"
   }
