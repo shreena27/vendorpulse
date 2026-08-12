@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import type { AlertWithNudge } from "@/lib/alerts/queries";
+import { isTerminalAlertStatus } from "@/lib/alerts/alertStatus";
 
 type Chip = "action" | "resolved" | "all";
 type Action = "hold" | "reviewed" | "escalate";
@@ -34,7 +35,9 @@ const ACTION_STYLES: Record<Action, string> = {
 
 // Past-tense, human-agency phrasing — the finance head decided, the system
 // only asked. Keyed by the resulting alert status, not the action verb
-// (escalate -> escalated).
+// (escalate -> escalated). Used both for the terminal ("reviewed") card
+// text and for the in-progress badge shown on a still-open hold/escalated
+// alert — same wording either way, just different placement.
 const RESOLVED_VERB_PHRASE: Record<string, string> = {
   hold: "held these payments",
   reviewed: "marked this reviewed",
@@ -67,8 +70,11 @@ export function AlertInbox({ alerts: initialAlerts }: { alerts: AlertWithNudge[]
 
   const filtered = useMemo(() => {
     return alerts.filter((a) => {
-      if (chip === "action") return a.resolvedAt === null;
-      if (chip === "resolved") return a.resolvedAt !== null;
+      // "Needs action" / "Resolved" is a status-terminality split, not a
+      // resolvedAt-is-set split: hold and escalated both set resolvedAt
+      // (who/when last acted) without closing the alert out.
+      if (chip === "action") return !isTerminalAlertStatus(a.status);
+      if (chip === "resolved") return isTerminalAlertStatus(a.status);
       return true;
     });
   }, [alerts, chip]);
@@ -153,14 +159,20 @@ export function AlertInbox({ alerts: initialAlerts }: { alerts: AlertWithNudge[]
         </div>
       ) : (
         <ul className="flex flex-col gap-stack-md">
-          {filtered.map((a) => (
+          {filtered.map((a) => {
+            const terminal = isTerminalAlertStatus(a.status);
+            // Once any action has been taken (hold/escalate), the original
+            // "Hold them?" question no longer applies — but the alert isn't
+            // closed out until it reaches a terminal status.
+            const actioned = a.status !== "open";
+            return (
             <li
               key={a.id}
               className={`ambient-shadow card-border relative flex flex-col gap-gutter overflow-hidden rounded-xl bg-surface-container-lowest p-gutter transition-shadow hover:shadow-[0px_10px_30px_rgba(15,23,42,0.08)] md:flex-row md:items-start ${
-                a.resolvedAt ? "opacity-90" : ""
+                terminal ? "opacity-90" : ""
               }`}
             >
-              {!a.resolvedAt && (
+              {!terminal && (
                 <div aria-hidden className="absolute inset-y-0 left-0 w-1 bg-primary-container" />
               )}
 
@@ -182,9 +194,11 @@ export function AlertInbox({ alerts: initialAlerts }: { alerts: AlertWithNudge[]
 
                 <p className="font-body-md text-body-md text-on-surface">{a.nudge.changeLine}</p>
                 <p className="font-body-md text-body-md text-on-surface-variant">{a.nudge.impactLine}</p>
-                {/* Only an alert still needing action asks a question — a
-                    resolved one gets its own past-tense line below instead. */}
-                {!a.resolvedAt && (
+                {/* Only a fresh, not-yet-actioned alert asks a question — a
+                    held/escalated/reviewed one gets its own past-tense line
+                    instead (as a badge if still open, or the terminal block
+                    below once resolved). */}
+                {!actioned && (
                   <p className="font-label-md text-label-md text-on-surface">{a.nudge.question}</p>
                 )}
 
@@ -196,14 +210,25 @@ export function AlertInbox({ alerts: initialAlerts }: { alerts: AlertWithNudge[]
               </div>
 
               <div className="flex w-full shrink-0 flex-row gap-stack-sm overflow-x-auto border-t border-surface-variant pt-gutter md:w-auto md:flex-col md:border-l md:border-t-0 md:pl-gutter md:pt-0">
-                {a.resolvedAt ? (
+                {terminal ? (
                   <p className="font-body-sm text-body-sm text-on-surface-variant">
                     {a.resolvedByName ?? "A team member"}{" "}
                     {RESOLVED_VERB_PHRASE[a.status] ?? "resolved this alert"} on{" "}
-                    {fmtDate(a.resolvedAt)}.
+                    {fmtDate(a.resolvedAt!)}.
                   </p>
                 ) : (
                   <div className="flex flex-col items-end gap-2">
+                    {/* Still-open alert that's already been held or
+                        escalated: say so, but keep every action available —
+                        escalating hands the decision to someone else, it
+                        doesn't close the alert (that's the bug this fixes). */}
+                    {actioned && (
+                      <p className="font-body-sm text-body-sm text-on-surface-variant">
+                        {a.resolvedByName ?? "A team member"}{" "}
+                        {RESOLVED_VERB_PHRASE[a.status] ?? "acted on this alert"} on{" "}
+                        {fmtDate(a.resolvedAt!)}.
+                      </p>
+                    )}
                     <div className="flex flex-row gap-2 md:flex-col">
                       {(Object.keys(ACTION_LABELS) as Action[]).map((action) => (
                         <button
@@ -226,7 +251,8 @@ export function AlertInbox({ alerts: initialAlerts }: { alerts: AlertWithNudge[]
                 )}
               </div>
             </li>
-          ))}
+            );
+          })}
         </ul>
       )}
     </div>

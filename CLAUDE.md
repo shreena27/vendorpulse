@@ -400,12 +400,29 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
   p_alert_id, p_action)`. This is the first `authenticated`-write capability on `alerts`, and — same
   as every prior user-triggered write (`import_vendors`, `record_bank_verification`,
   `create_certificate`) — it's a SECURITY DEFINER RPC, not a direct `UPDATE` RLS policy, because the
-  409-on-already-resolved requirement needs one atomic `update ... where resolved_at is null
-  returning *`; a select-then-update from application code would race. `action` → `status`:
-  `hold→hold`, `reviewed→reviewed`, `escalate→escalated` (verb vs. noun, mapped literally). "Already
-  resolved" for the 409 check is `resolved_at is not null` — independent of Chunk 3.2's dedupe
-  "open" check (`status in (open,hold,reviewed)`), which still governs whether a *new poll-detected
-  change* updates vs. creates a row; that logic is untouched.
+  409-on-already-resolved requirement needs one atomic conditional `update ... returning *`; a
+  select-then-update from application code would race. `action` → `status`: `hold→hold`,
+  `reviewed→reviewed`, `escalate→escalated` (verb vs. noun, mapped literally). "Already resolved" for
+  the 409 check is `status in (reviewed, cleared)` (see the `0014` bugfix below) — independent of
+  Chunk 3.2's dedupe "open" check (`status in (open,hold,reviewed)`), which still governs whether a
+  *new poll-detected change* updates vs. creates a row; that logic is untouched.
+- **Bugfix (2026-08-12), `supabase/migrations/0014_resolve_alert_terminal_status.sql`:** the RPC
+  originally guarded its atomic UPDATE with `resolved_at is null`, and set `resolved_at` on every
+  action (hold, reviewed, escalate) alike. The inbox UI treated `resolvedAt !== null` as "done," so
+  escalating (and holding) a payment incorrectly closed the alert into the Resolved tab and hid the
+  action buttons — even though escalating only hands the decision to someone else, and holding a
+  payment doesn't fix the underlying vendor issue. The guard now checks `status not in (reviewed,
+  cleared)` instead: `hold` and `escalated` are non-terminal and stay in "Needs action," and an
+  alert can still transition `hold → reviewed` or `escalated → reviewed` later. Only `reviewed` (or,
+  later, an explicit `cleared`/"Resolve") is terminal. `resolved_by`/`resolved_at` keep their
+  existing meaning ("who/when the current status was last set") — still updated on every action, no
+  longer read as the terminal signal. `lib/alerts/alertStatus.ts`'s `isTerminalAlertStatus()` is the
+  one place this terminal/non-terminal split is defined for the UI (`app/alerts/AlertInbox.tsx`),
+  mirroring the RPC's own guard so the two can't drift. A still-open but already-actioned alert
+  (`hold`/`escalated`) now shows a small "{name} held these payments on {date}." /
+  "{name} escalated this alert on {date}." line *alongside* the still-live action buttons, not in
+  place of them; the original nudge question ("Hold them?") stops showing once any action has been
+  taken, whether or not the alert is terminal yet.
 - **Nudge copy is one pure module, `lib/alerts/nudgeCopy.ts`, shared by the UI and the email** — the
   PRD §4.5 pattern exactly: `"Vendor X's GST registration just went inactive."` /
   `"2 pending payments total ₹4.1L."` / `"Hold them?"`. Payment count/amount are computed **live**
@@ -857,16 +874,23 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
   case, per-status phrase lookups, and the wording-constraint assertions (question always ends `?`,
   never a system-agency phrase). `sendAlertEmail.test.ts` (stub Resend client) asserts the
   vendor/amount/recipient payload — the literal "mocked in CI" requirement.
-- `lib/alerts/resolveAlert.integration.test.ts` is a **live-DB** integration test (needs migration
-  0008 applied): the first action on a seeded alert succeeds and sets
-  `status`/`resolved_by`/`resolved_at`; a second action on the same alert returns
-  `already_resolved` and the DB row's resolution fields are byte-for-byte unchanged from the first
-  call — the literal acceptance case. Also covers a different org's alert (RLS-scoped `not_found`)
-  and an unknown alert id.
+- `lib/alerts/resolveAlert.integration.test.ts` is a **live-DB** integration test (needs migrations
+  0008 and 0014 applied): `hold` and `escalate` both succeed and set `status`/`resolved_by`/
+  `resolved_at`, but — per the 0014 bugfix — neither is terminal, so a later `reviewed` action on
+  the same alert still succeeds (`hold → reviewed`, `escalated → reviewed`). Only `reviewed` itself
+  is terminal: a further action on an already-`reviewed` alert returns `already_resolved` and the
+  DB row's resolution fields are byte-for-byte unchanged from the first call — the literal
+  acceptance case. Also covers a different org's alert (RLS-scoped `not_found`) and an unknown
+  alert id.
 - `e2e/alerts.spec.ts` seeds a vendor + a GST check + two pending payments (₹2.5L + ₹1.6L = the
   PRD's own ₹4.1L example) + the alert row directly, visits `/alerts`, asserts the exact three-line
-  nudge copy renders, clicks "Hold," and asserts the card updates in place — no reload — to
-  "You held these payments," with all three action buttons gone.
+  nudge copy renders, clicks "Hold," and asserts the card updates in place — no reload — to show
+  "You held these payments" *alongside* all three action buttons (still visible — holding doesn't
+  close the alert), and that it's visible under "Needs action" but absent from "Resolved." A second
+  test (added with the 0014 bugfix) escalates an alert and asserts it stays under "Needs action"
+  (absent from "Resolved") with every action still available, then marks it reviewed and asserts it
+  now appears under "Resolved" and every action button is gone — the literal "escalate must not
+  auto-resolve, only Mark reviewed does" acceptance case from the bug report.
 - `lib/evidence/logEvent.test.ts` (Vitest, hermetic) covers Chunk 4.1's
   writer: default actor "system" vs. an explicit actor, batching multiple
   events into one insert call, a no-op (no insert call at all) on an empty

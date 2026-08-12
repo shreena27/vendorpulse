@@ -123,14 +123,62 @@ test("the inbox shows the exact nudge copy, and clicking Hold updates the card i
 
   await card.getByRole("button", { name: "Hold" }).click();
 
-  // Resolved in place — no reload, no page navigation — and phrased as
+  // Updated in place — no reload, no page navigation — and phrased as
   // something the person did, not something the system did automatically.
+  // Holding a payment doesn't mean the underlying vendor issue is fixed, so
+  // the alert stays actionable: all three buttons remain available.
   await expect(card.getByText(/You held these payments/)).toBeVisible();
+  await expect(card.getByRole("button", { name: "Hold" })).toBeVisible();
+  await expect(card.getByRole("button", { name: "Mark reviewed" })).toBeVisible();
+  await expect(card.getByRole("button", { name: "Escalate" })).toBeVisible();
+
+  // Already actioned once — the original question doesn't ask again.
+  await expect(card.getByText("Hold them?", { exact: true })).toHaveCount(0);
+
+  // A held alert is not resolved — it stays in "Needs action" and does not
+  // appear in "Resolved".
+  await page.getByRole("button", { name: "Needs action" }).click();
+  await expect(card).toBeVisible();
+  await page.getByRole("button", { name: "Resolved" }).click();
+  await expect(card).toHaveCount(0);
+});
+
+test("escalating keeps the alert in Needs action; marking it reviewed moves it to Resolved", async ({
+  page,
+}) => {
+  const email = await signUp(page, "escalate");
+  await seedAlert(email);
+
+  await page.goto("/alerts");
+  const card = page.getByRole("listitem").filter({ hasText: "Nudge Test Vendor" });
+  await expect(card).toBeVisible();
+
+  await card.getByRole("button", { name: "Escalate" }).click();
+  await expect(card.getByText(/You escalated this alert/)).toBeVisible();
+
+  // Escalating hands the decision to someone else — it does NOT close the
+  // alert out. It must stay visible under "Needs action" and absent from
+  // "Resolved", with every action (including "Mark reviewed") still open.
+  await page.getByRole("button", { name: "Needs action" }).click();
+  await expect(card).toBeVisible();
+  await expect(card.getByRole("button", { name: "Hold" })).toBeVisible();
+  await expect(card.getByRole("button", { name: "Mark reviewed" })).toBeVisible();
+  await expect(card.getByRole("button", { name: "Escalate" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Resolved" }).click();
+  await expect(card).toHaveCount(0);
+
+  // Back to "All" so the card is present to click on again.
+  await page.getByRole("button", { name: "All" }).click();
+  await card.getByRole("button", { name: "Mark reviewed" }).click();
+  await expect(card.getByText(/You marked this reviewed/)).toBeVisible();
   await expect(card.getByRole("button", { name: "Hold" })).toHaveCount(0);
   await expect(card.getByRole("button", { name: "Mark reviewed" })).toHaveCount(0);
   await expect(card.getByRole("button", { name: "Escalate" })).toHaveCount(0);
 
-  // A resolved alert no longer asks a question — that's only for alerts
-  // still needing action.
-  await expect(card.getByText("Hold them?", { exact: true })).toHaveCount(0);
+  // Only the explicit "Mark reviewed" action closes an alert out.
+  await page.getByRole("button", { name: "Needs action" }).click();
+  await expect(card).toHaveCount(0);
+  await page.getByRole("button", { name: "Resolved" }).click();
+  await expect(card).toBeVisible();
 });

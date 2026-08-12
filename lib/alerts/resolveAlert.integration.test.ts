@@ -22,13 +22,16 @@ const SERVICE = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const hasEnv = Boolean(SUPABASE_URL && ANON && SERVICE);
 
 /**
- * Chunk 3.3 acceptance (integration): resolve_alert() is atomic. The first
- * action on an alert succeeds and sets status/resolved_by/resolved_at; a
- * second action on the SAME alert — regardless of which action — returns
- * already_resolved and leaves the first resolution's fields untouched. Also
- * covers a different org's alert (not_found, RLS-scoped) and an unknown id.
+ * Chunk 3.3 acceptance (integration), updated by the 0014 bugfix:
+ * resolve_alert() is atomic, and only a TERMINAL status ('reviewed', later
+ * 'cleared') blocks further action — not merely "has been actioned once".
+ * 'hold' and 'escalated' stay actionable (an alert can go
+ * open -> hold -> reviewed, or open -> escalated -> reviewed); only once an
+ * alert reaches 'reviewed' does a further action return already_resolved,
+ * leaving the reviewed resolution's fields untouched. Also covers a
+ * different org's alert (not_found, RLS-scoped) and an unknown id.
  *
- * Prerequisite: migrations 0003, 0006, 0007, 0008 applied, Supabase
+ * Prerequisite: migrations 0003, 0006, 0007, 0008, 0014 applied, Supabase
  * "Confirm email" off.
  */
 describe.skipIf(!hasEnv)("resolveAlert (integration)", () => {
@@ -127,7 +130,7 @@ describe.skipIf(!hasEnv)("resolveAlert (integration)", () => {
     if (userIdB) await admin.auth.admin.deleteUser(userIdB);
   });
 
-  it("succeeds once, then returns already_resolved on a second call, leaving the first resolution untouched", async () => {
+  it("hold does not block a later action — it can still transition to reviewed", async () => {
     const alertId = await seedAlertInOrg(orgA);
 
     const first = await resolveAlert(userA, alertId, "hold");
@@ -138,6 +141,36 @@ describe.skipIf(!hasEnv)("resolveAlert (integration)", () => {
     expect(first.alert.resolved_at).not.toBeNull();
 
     const second = await resolveAlert(userA, alertId, "reviewed");
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.alert.status).toBe("reviewed");
+  });
+
+  it("escalate does not block a later action — it can still transition to reviewed", async () => {
+    const alertId = await seedAlertInOrg(orgA);
+
+    const first = await resolveAlert(userA, alertId, "escalate");
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(first.alert.status).toBe("escalated");
+
+    const second = await resolveAlert(userA, alertId, "reviewed");
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.alert.status).toBe("reviewed");
+  });
+
+  it("reviewed IS terminal — a further action returns already_resolved and leaves the resolution untouched", async () => {
+    const alertId = await seedAlertInOrg(orgA);
+
+    const first = await resolveAlert(userA, alertId, "reviewed");
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(first.alert.status).toBe("reviewed");
+    expect(first.alert.resolved_by).toBe(userIdA);
+    expect(first.alert.resolved_at).not.toBeNull();
+
+    const second = await resolveAlert(userA, alertId, "hold");
     expect(second).toEqual({ ok: false, reason: "already_resolved" });
 
     const { data: row } = await admin
@@ -145,7 +178,7 @@ describe.skipIf(!hasEnv)("resolveAlert (integration)", () => {
       .select("status, resolved_by, resolved_at")
       .eq("id", alertId)
       .single();
-    expect(row!.status).toBe("hold");
+    expect(row!.status).toBe("reviewed");
     expect(row!.resolved_by).toBe(userIdA);
     expect(row!.resolved_at).toBe(first.alert.resolved_at);
   });
