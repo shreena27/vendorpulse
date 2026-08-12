@@ -57,23 +57,29 @@ describe("formatExportCsv", () => {
     expect(dataLine).toContain('"The ""Best"" Traders"');
   });
 
-  it("renders null gstin/udyamNumber as empty strings, never the literal 'null'", () => {
-    const csv = formatExportCsv([row({ gstin: null, udyamNumber: null })]);
+  it("renders a null gstin as an empty string, never the literal 'null'", () => {
+    const csv = formatExportCsv([row({ gstin: null })]);
     const [, dataLine] = lines(csv);
     expect(dataLine).not.toContain("null");
     expect(dataLine.split(",")[3]).toBe("");
-    expect(dataLine.split(",")[4]).toBe("");
   });
 
-  it("renders not_applicable and no_record with an empty checkedAt column", () => {
-    const naCsv = formatExportCsv([row({ msmeStatus: { kind: "not_applicable" } })]);
+  it("never leaves the Udyam Number column blank — a null udyamNumber reads as 'Not registered'", () => {
+    const csv = formatExportCsv([row({ udyamNumber: null })]);
+    const [, dataLine] = lines(csv);
+    expect(dataLine).not.toContain("null");
+    expect(dataLine.split(",")[4]).toBe("Not registered");
+  });
+
+  it("renders not_applicable and no_record with distinct, self-explanatory labels and an empty checkedAt column", () => {
+    const naCsv = formatExportCsv([row({ msmeStatus: { kind: "not_applicable" }, udyamNumber: null })]);
     const naFields = lines(naCsv)[1].split(",");
-    expect(naFields[8]).toBe("Not applicable");
+    expect(naFields[8]).toBe("Not MSME-registered");
     expect(naFields[9]).toBe("");
 
     const nrCsv = formatExportCsv([row({ msmeStatus: { kind: "no_record" } })]);
     const nrFields = lines(nrCsv)[1].split(",");
-    expect(nrFields[8]).toBe("No record");
+    expect(nrFields[8]).toBe("No verification record");
     expect(nrFields[9]).toBe("");
   });
 

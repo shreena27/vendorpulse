@@ -13,7 +13,7 @@
 
 import PDFDocument from "pdfkit";
 import type { EvidenceExportRow } from "./buildExport";
-import { formatMsmeStatusLabel } from "./msmeStatusLabel";
+import { formatMsmeStatusLabel, formatUdyamNumberField } from "./msmeStatusLabel";
 
 export interface PdfExportRange {
   from: string;
@@ -95,7 +95,7 @@ export async function formatExportPdf(
         row.dueDate,
         row.vendorName,
         row.gstin ?? "",
-        row.udyamNumber ?? "",
+        formatUdyamNumberField(row.udyamNumber),
         row.amount.toFixed(2),
         row.paymentStatus,
         formatMsmeStatusLabel(row.msmeStatus),

@@ -4,7 +4,7 @@
  */
 
 import type { EvidenceExportRow } from "./buildExport";
-import { formatMsmeStatusLabel } from "./msmeStatusLabel";
+import { formatMsmeStatusLabel, formatUdyamNumberField } from "./msmeStatusLabel";
 
 const HEADER = [
   "Payment ID",
@@ -35,7 +35,7 @@ function toRowFields(row: EvidenceExportRow): string[] {
     row.dueDate,
     row.vendorName,
     row.gstin ?? "",
-    row.udyamNumber ?? "",
+    formatUdyamNumberField(row.udyamNumber),
     row.amount.toFixed(2),
     row.paymentMethod,
     row.paymentStatus,

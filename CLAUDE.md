@@ -539,7 +539,18 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
   silently. See the comment on `resolveMsmeStatusAsOf`.
 - `lib/evidence/msmeStatusLabel.ts` is the pure status→label formatter
   shared by the CSV and PDF output, same "wording never drifts across
-  surfaces" rationale as `lib/alerts/nudgeCopy.ts`. `lib/evidence/formatCsv.ts`
+  surfaces" rationale as `lib/alerts/nudgeCopy.ts`. **Bugfix (2026-08-12,
+  readability):** `MsmeAsOfStatus`'s `not_applicable` and `no_record` used
+  to both surface as variants of "Not applicable"/"No record," leaving an
+  auditor to cross-check the (sometimes blank) Udyam Number column to tell
+  "never MSME-checkable" apart from "a record is genuinely missing." Now
+  three distinct labels read correctly off the MSME Status column alone:
+  `not_applicable` → "Not MSME-registered", `no_record` → "No verification
+  record" (should only ever appear if `findMsmeEvidenceGaps.ts` would flag
+  that vendor), and the real reconstructed status otherwise. The same file
+  gained `formatUdyamNumberField()` so the Udyam Number column itself is
+  never left blank either — a null `udyamNumber` reads as "Not registered".
+  `lib/evidence/formatCsv.ts`
   emits RFC4180 CSV with a leading UTF-8 BOM (the target user opens this in
   Excel on Windows). `lib/evidence/formatPdf.ts` renders via `pdfkit`,
   wrapping its `Readable`-stream `PDFDocument` in a `Promise` so the route
@@ -968,9 +979,12 @@ Build principle: run every external API on a free tier or trial first — GLEIF 
   vendor with no udyam number, or one never checked at all, is never
   flagged (both are legitimate `no_record`, not this bug).
 - `lib/evidence/msmeStatusLabel.test.ts`, `lib/evidence/formatCsv.test.ts`
-  (Vitest, hermetic) cover the label lookup (including the
-  unrecognized-value fallback) and CSV rendering (RFC4180 quoting/escaping,
-  null-identifier handling, the BOM, two-decimal amounts).
+  (Vitest, hermetic) cover the label lookup (the three distinct
+  `not_applicable`/`no_record`/checked labels from the 2026-08-12
+  readability bugfix, plus the unrecognized-value fallback),
+  `formatUdyamNumberField()`'s null → "Not registered" fallback, and CSV
+  rendering (RFC4180 quoting/escaping, null-gstin handling, the BOM,
+  two-decimal amounts).
   `lib/evidence/formatPdf.test.ts` is a structural smoke test only (no
   PDF-parsing library is added): asserts a valid `%PDF-` buffer for both an
   empty rows array and a batch covering all three `MsmeAsOfStatus` kinds,
